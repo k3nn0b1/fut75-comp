@@ -43,11 +43,11 @@ const Hero = () => {
         <div ref={contentRef} className="max-w-3xl mx-auto text-center space-y-3 animate-fade-in" data-aos="fade-up">
           <h2 className="text-4xl md:text-6xl lg:text-7xl font-display text-foreground leading-tight">
             CAMISAS DE TIME
-            <span className="block text-primary glow-neon">ORIGINAIS</span>
+            <span className="block text-primary glow-neon">TAILANDESAS E PRIMEIRA LINHA</span>
           </h2>
           <p className="text-base md:text-lg text-muted-foreground max-w-xl mx-auto">
             Seleções, clubes europeus e brasileiros, edições retrô e muito mais.
-            A melhor coleção de camisas de futebol em um só lugar.
+            A melhor coleção de camisas de futebol, bermudas e caisas de basquete em um só lugar.
           </p>
           <div className="flex flex-col sm:flex-row gap-2 justify-center pt-1">
             <Button
