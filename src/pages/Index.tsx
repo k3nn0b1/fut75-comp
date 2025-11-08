@@ -9,6 +9,7 @@ import { Product } from "@/components/ProductCard";
 import AOS from "aos";
 import "aos/dist/aos.css";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 
 // Mock products data
 const mockProducts: Product[] = [
@@ -88,12 +89,7 @@ const mockProducts: Product[] = [
 
 const Index = () => {
   useEffect(() => {
-    AOS.init({
-      duration: 800,
-      once: true,
-      offset: 40,
-      easing: "ease-out-cubic",
-    });
+    AOS.init({ duration: 800, once: true, offset: 40, easing: "ease-out-cubic" });
     AOS.refresh();
   }, []);
 
@@ -102,13 +98,43 @@ const Index = () => {
   const [products, setProducts] = useState<Product[]>(mockProducts);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("admin_products");
-      if (raw) {
-        const fromAdmin = JSON.parse(raw) as Product[];
-        setProducts((prev) => [...prev, ...fromAdmin]);
+    const load = async () => {
+      const hasSupabase = !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (hasSupabase) {
+        try {
+          const { data, error } = await supabase
+            .from("products")
+            .select("*")
+            .order("id", { ascending: false });
+          if (!error && data) {
+            // Normaliza stockBySize (cast para number) e recalcula stock quando necessário
+            const normalized = (data as any[]).map((p) => {
+              const stockBySizeObj = p.stockBySize && typeof p.stockBySize === "object"
+                ? Object.fromEntries(
+                    Object.entries(p.stockBySize).map(([k, v]) => [k, Number((v as any) ?? 0)])
+                  )
+                : undefined;
+              const totalFromSizes = stockBySizeObj
+                ? Object.values(stockBySizeObj).reduce((sum, n) => sum + Number(n ?? 0), 0)
+                : undefined;
+              return {
+                ...p,
+                stockBySize: stockBySizeObj,
+                stock:
+                  totalFromSizes !== undefined && totalFromSizes > 0
+                    ? totalFromSizes
+                    : (typeof p.stock === "number" ? p.stock : 0),
+              } as Product;
+            });
+            setProducts(normalized);
+            return;
+          }
+        } catch {}
       }
-    } catch {}
+      // Sem Supabase: usar apenas produtos mockados
+      setProducts(mockProducts);
+    };
+    void load();
   }, []);
 
   const getMaxStockFor = (product: Product, size: string) => {

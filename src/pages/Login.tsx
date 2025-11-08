@@ -7,6 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
+
+const IS_SUPABASE_READY = !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 const Login = () => {
   const navigate = useNavigate();
@@ -18,12 +21,36 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      if (user === "admin" && pass === "nimda") {
-        sessionStorage.setItem("admin_auth", "true");
-        toast.success("Autenticado");
-        navigate("/admin");
+      if (IS_SUPABASE_READY) {
+        const { data, error } = await supabase.auth.signInWithPassword({ email: user, password: pass });
+        if (error || !data?.user) {
+          toast.error("Credenciais inválidas");
+        } else {
+          const uid = data.user.id;
+          const email = (data.user.email || "").toLowerCase();
+          const { data: admins, error: adminErr } = await supabase
+            .from("admins")
+            .select("user_id")
+            .eq("user_id", uid);
+          const isAdmin = !adminErr && Array.isArray(admins) && admins.length > 0;
+          const canBypass = email === "john.fcostaa@gmail.com"; // bypass temporário
+          if (!isAdmin && !canBypass) {
+            toast.error("Acesso restrito a administradores");
+            await supabase.auth.signOut();
+          } else {
+            sessionStorage.setItem("admin_auth", "true");
+            toast.success("Autenticado");
+            navigate("/admin");
+          }
+        }
       } else {
-        toast.error("Credenciais inválidas");
+        if (user === "admin" && pass === "nimda") {
+          sessionStorage.setItem("admin_auth", "true");
+          toast.success("Autenticado");
+          navigate("/admin");
+        } else {
+          toast.error("Credenciais inválidas");
+        }
       }
     } finally {
       setLoading(false);
