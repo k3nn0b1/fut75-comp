@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { Pencil, Check, X } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 
 // Modelo de produto
 interface AdminProduct {
@@ -47,27 +48,8 @@ async function uploadToCloudinary(file: File): Promise<{ secure_url: string; pub
 const normalizeCategory = (s: string) => s.toLowerCase().normalize('NFD').replace(/[^\x00-\x7F]/g, '').replace(/[\u0300-\u036f]/g, '');
 
 const Admin = () => {
-  // Auth: auto-logout em refresh (usa sessionStorage)
-  useEffect(() => {
-    if (!IS_SUPABASE_READY) return;
-    const checkAuth = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        window.location.href = "/login";
-        return;
-      }
-      const { data: admins, error } = await supabase
-        .from("admins")
-        .select("user_id")
-        .eq("user_id", user.id);
-      if (error || !admins || admins.length === 0) {
-        toast.error("Acesso restrito a administradores");
-        window.location.href = "/login";
-        return;
-      }
-    };
-    void checkAuth();
-  }, []);
+  // Auth: verificação de acesso é feita pelo AdminGuard em App.tsx
+  // Removido checkAuth local para evitar redirecionamentos duplicados.
 
   const [product, setProduct] = useState<AdminProduct>({
     name: "",
@@ -94,6 +76,9 @@ const Admin = () => {
   const [newGlobalSize, setNewGlobalSize] = useState("");
   const [newSizeInput, setNewSizeInput] = useState("");
   const [replaceFiles, setReplaceFiles] = useState<Record<number, File | null>>({});
+  const [confirmReplaceForId, setConfirmReplaceForId] = useState<number | null>(null);
+  const [confirmReplacePreview, setConfirmReplacePreview] = useState<string | null>(null);
+  const fileInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   // Edição inline (tamanhos e categorias)
   const [editingSize, setEditingSize] = useState<string | null>(null);
   const [sizeEditValue, setSizeEditValue] = useState("");
@@ -293,8 +278,20 @@ const Admin = () => {
       return;
     }
     setReplaceFiles((prev) => ({ ...prev, [id]: file }));
+    setConfirmReplaceForId(id);
+    setConfirmReplacePreview(URL.createObjectURL(file));
   };
-
+  
+  const triggerFilePickerForProduct = (id: number) => {
+    const input = fileInputRefs.current[id];
+    if (input) input.click();
+  };
+  
+  const handleCancelReplace = (id: number) => {
+    setReplaceFiles((prev) => ({ ...prev, [id]: null }));
+    const input = fileInputRefs.current[id];
+    if (input) input.value = "";
+  };
   const handleImage = (file?: File) => {
     if (!file) return;
     if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
@@ -671,6 +668,10 @@ const Admin = () => {
                       const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ["U"];  
                       const selected = selectedSizes[p.id] || sizes[0];
                       const currentStockBySize = p.stockBySize || {};
+                      const computedTotal = (() => {
+                        const sum = Object.values(currentStockBySize).reduce((acc, n) => acc + (Number(n) || 0), 0);
+                        return sum > 0 ? sum : Number(p.stock || 0);
+                      })();
                       const isExpanded = expandedProductId === p.id;
                       return (
                         <div key={p.id} className="rounded-md border border-border/50 bg-background">
@@ -683,7 +684,7 @@ const Admin = () => {
                               <div className="font-medium">{p.name}</div>
                               <div className="text-xs text-muted-foreground">{p.category}</div>
                             </div>
-                            <Badge className="bg-primary/90 text-primary-foreground">{p.stock ?? 0} un.</Badge>
+                            <Badge className="bg-primary/90 text-primary-foreground">{computedTotal} un.</Badge>
                           </button>
                           {isExpanded && (
                             <div className="p-3 border-t border-border/50 space-y-4">
@@ -779,7 +780,7 @@ const Admin = () => {
                                 <Label>Distribuir estoque por tamanho</Label>
                                 {(() => {
                                   const currentStockBySize = p.stockBySize || {};
-                                  const editedTotal = Number(editFields[p.id]?.stock ?? p.stock ?? 0);
+                                  const editedTotal = Number(editFields[p.id]?.stock ?? computedTotal);
                                   const distributionTotal = (p.sizes || []).reduce((acc, s) => acc + Number(currentStockBySize[s] || 0), 0);
                                   const remaining = Math.max(0, editedTotal - distributionTotal);
                                   return (
@@ -807,12 +808,12 @@ const Admin = () => {
                                 <Label>Estoque (total)</Label>
                                 <Input
                                   type="number"
-                                  value={Number(editFields[p.id]?.stock ?? p.stock)}
+                                  value={Number(editFields[p.id]?.stock ?? computedTotal)}
                                   onChange={(e) =>
                                     setEditFields((prev) => ({
                                       ...prev,
                                       [p.id]: {
-                                        ...(prev[p.id] || { name: p.name, category: p.category, price: Number(p.price || 0), stock: Number(p.stock || 0) }),
+                                        ...(prev[p.id] || { name: p.name, category: p.category, price: Number(p.price || 0), stock: computedTotal }),
                                         stock: parseInt(e.target.value) || 0,
                                       },
                                     }))
@@ -1076,8 +1077,15 @@ const Admin = () => {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            <Input type="file" accept="image/*" onChange={(e) => handleSelectReplaceFile(p.id, e.target.files?.[0] ?? undefined)} />
-                            <Button variant="outline" onClick={() => handleReplaceProductImage(p.id)} disabled={uploading}>Alterar imagem</Button>
+                            {/* input de arquivo oculto, acionado pelo botão Alterar imagem */}
+                            <input
+                              ref={(el) => { fileInputRefs.current[p.id] = el; }}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => handleSelectReplaceFile(p.id, e.target.files?.[0] ?? undefined)}
+                            />
+                            <Button variant="outline" onClick={() => triggerFilePickerForProduct(p.id)} disabled={uploading}>Alterar imagem</Button>
                             <Button variant="destructive" onClick={() => handleRemoveProductImage(p.id)}>Remover imagem</Button>
                           </div>
                         </div>
@@ -1089,6 +1097,53 @@ const Admin = () => {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog open={!!confirmReplaceForId} onOpenChange={(open) => {
+        if (!open) {
+          if (confirmReplaceForId != null) handleCancelReplace(confirmReplaceForId);
+          setConfirmReplaceForId(null);
+          setConfirmReplacePreview(null);
+        }
+      }}>
+        <DialogContent className="bg-black text-green-400 border border-green-600">
+          <DialogHeader>
+            <DialogTitle className="text-green-500">Confirmar alteração de imagem</DialogTitle>
+            <DialogDescription className="text-green-400">
+              Esta ação irá substituir a imagem atual do produto. Confirme para continuar.
+            </DialogDescription>
+          </DialogHeader>
+          {confirmReplacePreview && (
+            <div className="mt-4">
+              <img src={confirmReplacePreview} alt="Prévia da nova imagem" className="w-full max-h-64 object-contain rounded border border-green-700" />
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="border-green-600 text-green-400 hover:bg-green-950"
+              onClick={() => {
+                if (confirmReplaceForId != null) handleCancelReplace(confirmReplaceForId);
+                setConfirmReplaceForId(null);
+                setConfirmReplacePreview(null);
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              className="bg-green-600 hover:bg-green-700 text-black"
+              onClick={() => {
+                if (confirmReplaceForId != null) {
+                  handleReplaceProductImage(confirmReplaceForId);
+                  setConfirmReplaceForId(null);
+                  setConfirmReplacePreview(null);
+                }
+              }}
+            >
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Footer />
     </div>
