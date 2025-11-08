@@ -49,11 +49,13 @@ const ProductGrid = ({ products, onAddToCart }: ProductGridProps) => {
         {/* Products Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredProducts.map((product) => (
-            <ProductCard
-              key={product.id}
-              product={product}
-              onAddToCart={onAddToCart}
-            />
+            <div key={product.id}>
+              <ProductCard
+                product={product}
+                onAddToCart={onAddToCart}
+              />
+              <p className="mt-2 text-xs text-muted-foreground text-center">Clique na imagem para ver estoque por tamanho</p>
+            </div>
           ))}
         </div>
 

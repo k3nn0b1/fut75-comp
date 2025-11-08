@@ -12,7 +12,7 @@ const Footer = () => {
               <img src={logo} alt="FUT75 Store" className="h-14 sm:h-16 md:h-20 w-auto object-contain" />
             </div>
             <p className="text-muted-foreground">
-              As melhores camisas de time originais do mundo. Qualidade garantida.
+              As melhores camisas de time do mundo. Qualidade garantida.
             </p>
           </div>
 

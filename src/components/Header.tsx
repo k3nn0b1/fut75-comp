@@ -16,7 +16,12 @@ const Header = ({ cartItemCount, onCartClick }: HeaderProps) => {
           <img
             src={logo}
             alt="FUT75 Store"
-            className="h-10 md:h-14 w-auto object-contain"
+            className="h-10 md:h-14 w-auto object-contain cursor-pointer"
+            onClick={() =>
+              document
+                .getElementById("hero")
+                ?.scrollIntoView({ behavior: "smooth" })
+            }
           />
         </div>
 
@@ -28,7 +33,7 @@ const Header = ({ cartItemCount, onCartClick }: HeaderProps) => {
         >
           <ShoppingCart className="w-5 h-5" />
           {cartItemCount > 0 && (
-            <Badge 
+            <Badge
               className="absolute -top-2 -right-2 bg-primary text-primary-foreground glow-soft"
               variant="default"
             >
