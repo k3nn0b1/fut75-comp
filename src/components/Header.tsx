@@ -2,13 +2,16 @@ import { ShoppingCart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import logo from "@/assets/logo.png";
+import * as React from "react";
 
 interface HeaderProps {
-  cartItemCount: number;
-  onCartClick: () => void;
+  cartItemCount?: number;
+  onCartClick?: () => void;
+  rightAction?: React.ReactNode;
+  showCart?: boolean; // default true
 }
 
-const Header = ({ cartItemCount, onCartClick }: HeaderProps) => {
+const Header = ({ cartItemCount = 0, onCartClick = () => {}, rightAction, showCart = true }: HeaderProps) => {
   return (
     <header className="sticky top-0 z-50 border-b border-border/50 backdrop-blur-xl bg-background/80">
       <div className="container mx-auto px-4 py-4 flex items-center justify-between">
@@ -25,22 +28,26 @@ const Header = ({ cartItemCount, onCartClick }: HeaderProps) => {
           />
         </div>
 
-        <Button
-          onClick={onCartClick}
-          variant="outline"
-          size="lg"
-          className="relative border-primary/30 hover:border-primary hover:bg-primary/10 transition-smooth"
-        >
-          <ShoppingCart className="w-5 h-5" />
-          {cartItemCount > 0 && (
-            <Badge
-              className="absolute -top-2 -right-2 bg-primary text-primary-foreground glow-soft"
-              variant="default"
-            >
-              {cartItemCount}
-            </Badge>
-          )}
-        </Button>
+        {rightAction ? (
+          rightAction
+        ) : showCart ? (
+          <Button
+            onClick={onCartClick}
+            variant="outline"
+            size="lg"
+            className="relative border-primary/30 hover:border-primary hover:bg-primary/10 transition-smooth"
+          >
+            <ShoppingCart className="w-5 h-5" />
+            {cartItemCount > 0 && (
+              <Badge
+                className="absolute -top-2 -right-2 bg-primary text-primary-foreground glow-soft"
+                variant="default"
+              >
+                {cartItemCount}
+              </Badge>
+            )}
+          </Button>
+        ) : null}
       </div>
     </header>
   );

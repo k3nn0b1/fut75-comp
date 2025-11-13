@@ -33,6 +33,12 @@ ALTER TABLE public.products
 CREATE INDEX IF NOT EXISTS idx_products_category ON public.products(category);
 CREATE INDEX IF NOT EXISTS idx_products_created_at ON public.products(created_at DESC);
 
+-- Associação de categoria por ID (FK)
+ALTER TABLE public.products
+  ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES public.categories(id);
+
+CREATE INDEX IF NOT EXISTS idx_products_category_id ON public.products(category_id);
+
 -- Função para calcular o total de estoque a partir do stockBySize
 CREATE OR REPLACE FUNCTION public.compute_stock_from_stock_by_size()
 RETURNS TRIGGER AS $$
@@ -177,3 +183,79 @@ CREATE POLICY "Admins delete sizes"
 
 -- Exemplo de bootstrap (execute manualmente após criar o usuário):
 -- INSERT INTO public.admins (user_id) VALUES ('00000000-0000-0000-0000-000000000000'); -- substitua pelo UUID real
+
+-- Tabela de pedidos
+CREATE TABLE IF NOT EXISTS public.pedidos (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cliente_nome TEXT NOT NULL,
+  cliente_telefone TEXT NOT NULL,
+  itens JSONB NOT NULL,
+  valor_total NUMERIC(10,2) NOT NULL CHECK (valor_total >= 0),
+  status TEXT NOT NULL CHECK (status IN ('pendente','concluido','cancelado')),
+  data_criacao TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Habilitar RLS para pedidos
+ALTER TABLE public.pedidos ENABLE ROW LEVEL SECURITY;
+
+-- Políticas para pedidos
+DROP POLICY IF EXISTS "Public insert pedidos" ON public.pedidos;
+CREATE POLICY "Public insert pedidos"
+  ON public.pedidos
+  FOR INSERT
+  TO public
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Admins select pedidos" ON public.pedidos;
+CREATE POLICY "Admins select pedidos"
+  ON public.pedidos
+  FOR SELECT
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins update pedidos" ON public.pedidos;
+CREATE POLICY "Admins update pedidos"
+  ON public.pedidos
+  FOR UPDATE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+-- Permitir DELETE apenas para admins autenticados
+DROP POLICY IF EXISTS "Admins delete pedidos" ON public.pedidos;
+CREATE POLICY "Admins delete pedidos"
+  ON public.pedidos
+  FOR DELETE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+-- Índices úteis para pedidos
+CREATE INDEX IF NOT EXISTS idx_pedidos_status ON public.pedidos(status);
+CREATE INDEX IF NOT EXISTS idx_pedidos_data_criacao ON public.pedidos(data_criacao DESC);
+
+-- Audit logs para ações em pedidos
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  pedido_id uuid NOT NULL,
+  action text NOT NULL CHECK (action IN ('concluir','cancelar')),
+  actor_id uuid,
+  actor_email text,
+  details jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Admins insert audit_logs"
+ON public.audit_logs
+FOR INSERT
+TO authenticated
+WITH CHECK (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+CREATE POLICY "Admins select audit_logs"
+ON public.audit_logs
+FOR SELECT
+TO authenticated
+USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_pedido_id ON public.audit_logs(pedido_id);

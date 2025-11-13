@@ -11,6 +11,8 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { Pencil, Check, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatBRL } from "@/lib/utils";
 
 // Modelo de produto
 interface AdminProduct {
@@ -46,6 +48,19 @@ async function uploadToCloudinary(file: File): Promise<{ secure_url: string; pub
 }
 
 const normalizeCategory = (s: string) => s.toLowerCase().normalize('NFD').replace(/[^\x00-\x7F]/g, '').replace(/[\u0300-\u036f]/g, '');
+
+// Helpers de ordenação de tamanhos
+const sizeOrder = ["PP", "P", "M", "G", "GG", "XG"];
+const rankSize = (s: string) => {
+  const idx = sizeOrder.indexOf((s || "").toUpperCase());
+  return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+};
+const sortSizes = (arr: string[]) => [...(arr || [])].sort((a, b) => {
+  const ra = rankSize(a);
+  const rb = rankSize(b);
+  if (ra !== rb) return ra - rb;
+  return (a || "").localeCompare(b || "");
+});
 
 const Admin = () => {
   // Auth: verificação de acesso é feita pelo AdminGuard em App.tsx
@@ -83,7 +98,121 @@ const Admin = () => {
   const [editingSize, setEditingSize] = useState<string | null>(null);
   const [sizeEditValue, setSizeEditValue] = useState("");
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
-  const [categoryEditValue, setCategoryEditValue] = useState("");
+const [categoryEditValue, setCategoryEditValue] = useState("");
+
+// Pedidos: estados
+const [pedidos, setPedidos] = useState<any[]>([]);
+const [pedidoStatusFilter, setPedidoStatusFilter] = useState<string>("todos");
+const [pedidoSearch, setPedidoSearch] = useState<string>("");
+const [confirmAction, setConfirmAction] = useState<{ id: string; action: "concluir" | "cancelar" } | null>(null);
+const [pedidoDetalhesId, setPedidoDetalhesId] = useState<string | number | null>(null);
+const [pedidoSeq, setPedidoSeq] = useState<Record<string, number>>({});
+
+
+// Função de ordenação: pendentes primeiro; depois concluídos/cancelados; dentro do grupo, mais recentes primeiro
+const sortPedidos = (list: any[]) => {
+  return [...list].sort((a, b) => {
+    const order = (s: string) => (s === 'pendente' ? 0 : 1);
+    const diff = order(a.status) - order(b.status);
+    if (diff !== 0) return diff;
+    return new Date(b.data_criacao).getTime() - new Date(a.data_criacao).getTime();
+  });
+};
+
+// Carregamento inicial e realtime
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const fetchPedidos = async () => {
+    const { data, error } = await supabase
+      .from("pedidos")
+      .select("*")
+      .order("data_criacao", { ascending: false });
+    if (!error && data) setPedidos(sortPedidos(data as any[]));
+  };
+  void fetchPedidos();
+
+  const channel = supabase
+    .channel("pedidos-realtime")
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, (payload: any) => {
+      const newRow = payload.new;
+      if (!newRow) return;
+      setPedidos((prev) => sortPedidos([newRow, ...prev]));
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pedidos' }, (payload: any) => {
+      const newRow = payload.new;
+      if (!newRow) return;
+      setPedidos((prev) => {
+        const idx = prev.findIndex((p) => p.id === newRow.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = newRow;
+          return sortPedidos(next);
+        }
+        return sortPedidos([newRow, ...prev]);
+      });
+    })
+    .subscribe();
+
+  return () => {
+    try { supabase.removeChannel(channel); } catch {}
+  };
+}, []);
+
+// Filtro
+const filteredPedidos = pedidos.filter((p) => {
+  const matchStatus = pedidoStatusFilter === 'todos' || p.status === pedidoStatusFilter;
+  const term = pedidoSearch.toLowerCase().trim();
+  const matchSearch = term === ''
+    || (p.cliente_nome?.toLowerCase().includes(term))
+    || (String(p.id).toLowerCase().includes(term));
+  return matchStatus && matchSearch;
+});
+
+// Sequencial estável por ordem de criação (mais antigo = 1)
+useEffect(() => {
+  const ordered = [...pedidos].sort((a, b) => new Date(a.data_criacao).getTime() - new Date(b.data_criacao).getTime());
+  const map: Record<string, number> = {};
+  ordered.forEach((p, i) => { map[String(p.id)] = i + 1; });
+  setPedidoSeq(map);
+}, [pedidos]);
+
+// Baixa de estoque por tamanho ao concluir
+const applyBaixaDeEstoque = async (pedido: any) => {
+  for (const item of pedido.itens || []) {
+    const productId = item.product_id;
+    const tamanho = item.tamanho;
+    const qty = Number(item.quantidade || 0);
+    if (!productId || !tamanho || qty <= 0) continue;
+    const { data: prodData } = await supabase.from('products').select('*').eq('id', productId).single();
+    if (!prodData) continue;
+    const stockBySize = prodData.stockBySize || {};
+    const current = Number(stockBySize[tamanho] || 0);
+    const next = Math.max(0, current - qty);
+    const nextStockBySize = { ...stockBySize, [tamanho]: next };
+    await supabase.from('products').update({ stockBySize: nextStockBySize }).eq('id', productId);
+  }
+};
+
+// Confirmar ação de concluir/cancelar
+const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") => {
+  const target = pedidos.find((p) => p.id === id);
+  if (!target) return;
+  try {
+    if (action === 'concluir') {
+      await applyBaixaDeEstoque(target);
+    }
+    const { error } = await supabase.from('pedidos').update({ status: action === 'concluir' ? 'concluido' : 'cancelado' }).eq('id', id);
+    if (error) throw error;
+    // Atualização otimista de UI
+    setPedidos((prev) => {
+      const next = prev.map((p) => p.id === id ? { ...p, status: action === 'concluir' ? 'concluido' : 'cancelado' } : p);
+      return sortPedidos(next);
+    });
+    toast.success(action === 'concluir' ? 'Pedido concluído' : 'Pedido cancelado');
+  } catch (e: any) {
+    toast.error('Falha ao atualizar pedido', { description: e?.message });
+  }
+};
 
   useEffect(() => {
     const init = async () => {
@@ -396,7 +525,7 @@ const Admin = () => {
       const { data, error } = await supabase.from("products").insert([baseProductForSupabase]).select("*").single();
       if (error) throw error;
       setStoredProducts((prev) => [...prev, data]);
-      toast.success("Produto cadastrado", { description: `${product.name} - R$ ${product.price.toFixed(2)}` });
+      toast.success("Produto cadastrado", { description: `${product.name} - ${formatBRL(product.price)}` });
       setProduct({ name: "", category: "", price: 0, sizes: [], stock: 0, imageUrl });
       setImageFile(null);
       setImagePreview(null);
@@ -505,21 +634,132 @@ const Admin = () => {
 
   return (
     <div className="min-h-screen relative">
-      <Header cartItemCount={0} onCartClick={() => {}} />
+      <Header
+        showCart={false}
+        rightAction={(
+          <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={handleLogout}>Sair</Button>
+        )}
+      />
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl md:text-3xl font-bold">Painel Administrativo</h1>
-          <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={handleLogout}>Sair</Button>
         </div>
 
-        <Tabs defaultValue="products">
+
+        <Tabs defaultValue="pedidos">
           <TabsList>
+              <TabsTrigger value="pedidos">Pedidos</TabsTrigger>
               <TabsTrigger value="products">Produtos</TabsTrigger>
               <TabsTrigger value="stock">Estoque</TabsTrigger>
               <TabsTrigger value="sizes">Tamanhos</TabsTrigger>
               <TabsTrigger value="images">Imagens</TabsTrigger>
               <TabsTrigger value="categories">Categorias</TabsTrigger>
             </TabsList>
+
+          {/* Pedidos */}
+          <TabsContent value="pedidos" className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Pedidos</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col md:flex-row gap-3 md:items-end">
+                  <div className="flex-1">
+                    <Label>Buscar (nome do cliente ou ID)</Label>
+                    <Input placeholder="Ex: João ou 8fbd..." value={pedidoSearch} onChange={(e) => setPedidoSearch(e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Status</Label>
+                    <select
+                      className="w-full rounded-md border px-3 py-2 bg-background text-foreground"
+                      value={pedidoStatusFilter}
+                      onChange={(e) => setPedidoStatusFilter(e.target.value)}
+                    >
+                      <option value="todos">Todos</option>
+                      <option value="pendente">Pendente</option>
+                      <option value="concluido">Concluído</option>
+                      <option value="cancelado">Cancelado</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredPedidos.length === 0 ? (
+                  <p className="text-muted-foreground">Nenhum pedido encontrado.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="bg-muted">
+                          <th className="px-3 py-2 text-left">Data</th>
+                          <th className="px-3 py-2 text-left">ID</th>
+                          <th className="px-3 py-2 text-left">Cliente</th>
+                          <th className="px-3 py-2 text-left">Telefone</th>
+                          <th className="px-3 py-2 text-left">Total</th>
+                          <th className="px-3 py-2 text-left">Status</th>
+                          <th className="px-3 py-2 text-left">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredPedidos.map((p) => (
+                          <tr key={p.id} onClick={() => setPedidoDetalhesId(p.id)} className="hover:bg-muted/40 cursor-pointer">
+                            <td className="px-3 py-2 align-middle whitespace-nowrap">
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span>{new Date(p.data_criacao).toLocaleDateString()}</span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>{new Date(p.data_criacao).toLocaleTimeString()}</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap font-mono text-xs w-10 text-center" title="Sequencial">{pedidoSeq[String(p.id)] ?? '—'}</td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap max-w-[220px] truncate" title={p.cliente_nome}>{p.cliente_nome}</td>
+                            <td className="px-3 py-2 align-middle whitespace-nowrap">{p.cliente_telefone}</td>
+                            <td className="px-3 py-2 align-middle">{formatBRL(Number(p.valor_total || 0))}</td>
+                            <td className="px-3 py-2 align-middle">
+                              {p.status === 'pendente' && <Badge className="bg-amber-500 text-black">Pendente</Badge>}
+                              {p.status === 'concluido' && <span className="text-green-500 font-medium">Concluído</span>}
+                              {p.status === 'cancelado' && <span className="text-white font-medium">Cancelado</span>}
+                            </td>
+                            <td className="px-3 py-2 align-middle">
+                              <div className="flex items-center gap-2">
+                                {p.status === 'pendente' ? (
+                                  <>
+                                    <button
+                                      className="group relative overflow-hidden px-3 py-1.5 text-sm font-semibold rounded-md text-green-600 bg-black disabled:opacity-50"
+                                      onClick={(e) => { e.stopPropagation(); setConfirmAction({ id: p.id, action: 'concluir' }); }}
+                                    >
+                                      <span className="relative z-10 transition-colors duration-300 group-hover:text-white">Confirmar</span>
+                                      <span className="absolute inset-0 z-0 scale-x-0 bg-green-600 transition-transform duration-300 ease-out origin-left group-hover:scale-x-100" />
+                                    </button>
+                                    <button
+                                      className="group relative overflow-hidden px-3 py-1.5 text-sm font-semibold rounded-md text-red-600 bg-black disabled:opacity-50"
+                                      onClick={(e) => { e.stopPropagation(); setConfirmAction({ id: p.id, action: 'cancelar' }); }}
+                                    >
+                                      <span className="relative z-10 transition-colors duration-300 group-hover:text-white">Cancelar</span>
+                                      <span className="absolute inset-0 z-0 scale-x-0 bg-red-600 transition-transform duration-300 ease-out origin-left group-hover:scale-x-100" />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    className="group relative overflow-hidden px-3 py-1.5 text-sm font-semibold rounded-md text-[#262626] bg-black disabled:opacity-50"
+                                    onClick={(e) => { e.stopPropagation(); setPedidoDetalhesId(p.id); }}
+                                  >
+                                    <span className="relative z-10 transition-colors duration-300 group-hover:text-white text-neutral-200">Detalhar</span>
+                                    <span className="absolute inset-0 z-0 scale-x-0 bg-[#262626] transition-transform duration-300 ease-out origin-left group-hover:scale-x-100" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* Produtos */}
           <TabsContent value="products" className="mt-6">
@@ -1086,7 +1326,13 @@ const Admin = () => {
                               onChange={(e) => handleSelectReplaceFile(p.id, e.target.files?.[0] ?? undefined)}
                             />
                             <Button variant="outline" onClick={() => triggerFilePickerForProduct(p.id)} disabled={uploading}>Alterar imagem</Button>
-                            <Button variant="destructive" onClick={() => handleRemoveProductImage(p.id)}>Remover imagem</Button>
+                            <Button
+                              variant="ghost"
+                              className="text-destructive hover:bg-destructive/10"
+                              onClick={() => handleRemoveProductImage(p.id)}
+                            >
+                              Remover imagem
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -1105,7 +1351,7 @@ const Admin = () => {
           setConfirmReplacePreview(null);
         }
       }}>
-        <DialogContent className="bg-black text-green-400 border border-green-600">
+        <DialogContent className="bg-[#141414] text-green-400 border border-green-600">
           <DialogHeader>
             <DialogTitle className="text-green-500">Confirmar alteração de imagem</DialogTitle>
             <DialogDescription className="text-green-400">
@@ -1145,21 +1391,92 @@ const Admin = () => {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!confirmAction} onOpenChange={(open) => setConfirmAction(open ? confirmAction : null)}>
+        <DialogContent className="bg-[#141414] text-green-400 border border-green-600">
+          <DialogHeader>
+            <DialogTitle className="text-green-500">Confirmar {confirmAction?.action === 'concluir' ? 'conclusão' : 'cancelamento'} do pedido</DialogTitle>
+            <DialogDescription className="text-green-400">
+              Revise os itens e o impacto no estoque antes de confirmar.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {(pedidos.find(p => p.id === confirmAction?.id)?.itens || []).map((it: any, idx: number) => {
+              const prod = storedProducts.find(sp => sp.id === it.product_id);
+              const estoqueAtual = Math.max(0, Number((prod?.stockBySize || {})[it.tamanho] || 0));
+              const apos = confirmAction?.action === 'concluir' ? Math.max(0, estoqueAtual - Number(it.quantidade || 0)) : estoqueAtual;
+              return (
+                <div key={idx} className="flex items-center gap-3 text-sm">
+                  <span>• {it.produto}</span>
+                  <Badge variant="outline">{it.tamanho}</Badge>
+                  <span>x{it.quantidade}</span>
+                  <span className="text-xs text-muted-foreground">Estoque atual: {estoqueAtual}</span>
+                  <span className="text-xs text-muted-foreground">Após ação: {apos}</span>
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmAction(null)}>Cancelar</Button>
+            <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { if (confirmAction) handleConfirmAction(confirmAction.id, confirmAction.action); setConfirmAction(null); }}>
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={pedidoDetalhesId != null} onOpenChange={(open) => setPedidoDetalhesId(open ? pedidoDetalhesId : null)}>
+        <DialogContent className="bg-black text-green-400 border border-green-600">
+          <DialogHeader>
+            <DialogTitle className="text-white text-xl sm:text-2xl">Detalhes do pedido</DialogTitle>
+            <DialogDescription className="text-white">ID: {pedidoSeq[String(pedidoDetalhesId ?? '')] ?? '—'}</DialogDescription>
+          </DialogHeader>
+          {(() => {
+            const pedido = pedidos.find(p => p.id === pedidoDetalhesId);
+            const itens = pedido?.itens || [];
+            const groups: Record<string, number> = {};
+            for (const it of itens) {
+              const t = it.tamanho;
+              const q = Number(it.quantidade || 0);
+              if (!t || q <= 0) continue;
+              groups[t] = (groups[t] || 0) + q;
+            }
+            const sizes = Object.keys(groups).sort((a,b) => rankSize(a) - rankSize(b));
+            return (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-green-600/40 p-3 bg-black/40">
+                    <p className="text-sm"><span className="text-white">Cliente:</span> <span className="text-green-500">{pedido?.cliente_nome || '—'}</span></p>
+                    <p className="text-sm"><span className="text-white">Telefone:</span> <span className="text-green-500">{pedido?.cliente_telefone || '—'}</span></p>
+                    <p className="text-sm"><span className="text-white">Data/Hora:</span> <span className="text-green-500">{pedido?.data_criacao ? new Date(pedido.data_criacao).toLocaleString() : '—'}</span></p>
+                  </div>
+                  <div className="rounded-md border border-green-600/40 p-3 bg-black/40">
+                    <p className="text-sm"><span className="text-white">Status:</span> <span className={pedido?.status === 'pendente' ? 'text-amber-500' : pedido?.status === 'cancelado' ? 'text-white' : 'text-green-500'}>{pedido?.status || '—'}</span></p>
+                    <p className="text-sm"><span className="text-white">Total:</span> <span className="text-green-500">{formatBRL(Number(pedido?.valor_total || 0))}</span></p>
+                  </div>
+                </div>
+                <div>
+                   <p className="text-white text-sm mb-2">Itens detalhados</p>
+                   <div className="space-y-2">
+                     {itens.map((it: any, i: number) => (
+                       <div key={i} className="rounded-md border border-green-600 bg-black/40 p-2 grid grid-cols-[auto_2rem_auto] items-center gap-2">
+                         <span className="text-white">{it.produto}</span>
+                        <Badge variant="outline" className="w-8 justify-center text-xs">{it.tamanho}</Badge>
+                        <span className="text-green-500">x{it.quantidade}</span>
+                       </div>
+                     ))}
+                     {itens.length === 0 && <p className="text-sm text-muted-foreground">Sem itens.</p>}
+                   </div>
+                 </div>
+              </div>
+            );
+          })()}
+
+        </DialogContent>
+      </Dialog>
+
       <Footer />
     </div>
   );
 };
 
 export default Admin;
-
-const sizeOrder = ["PP", "P", "M", "G", "GG", "XG"];
-const rankSize = (s: string) => {
-  const idx = sizeOrder.indexOf(s.toUpperCase());
-  return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
-};
-const sortSizes = (arr: string[]) => [...(arr || [])].sort((a, b) => {
-  const ra = rankSize(a);
-  const rb = rankSize(b);
-  if (ra !== rb) return ra - rb;
-  return a.localeCompare(b);
-});

@@ -1,7 +1,11 @@
+import React from "react";
 import { X, ShoppingBag, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { formatBRL } from "@/lib/utils";
 
 export interface CartItem {
   id: number;
@@ -18,11 +22,23 @@ interface CartProps {
   items: CartItem[];
   onUpdateQuantity: (id: number, size: string, quantity: number) => void;
   onRemoveItem: (id: number, size: string) => void;
-  onCheckout: () => void;
+  onCheckout: (clienteNome: string, clienteTelefone: string) => void;
 }
 
 const Cart = ({ isOpen, onClose, items, onUpdateQuantity, onRemoveItem, onCheckout }: CartProps) => {
   const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const [clienteNome, setClienteNome] = React.useState("");
+  const [clienteTelefone, setClienteTelefone] = React.useState("");
+
+  const formatPhoneMask = (value: string) => {
+    const digits = value.replace(/\D+/g, "").slice(0, 11);
+    const part1 = digits.slice(0, 2);
+    const part2 = digits.slice(2, 7);
+    const part3 = digits.slice(7, 11);
+    if (digits.length <= 2) return part1 ? `(${part1}` : "";
+    if (digits.length <= 7) return `(${part1}) ${part2}`;
+    return `(${part1}) ${part2}-${part3}`;
+  };
 
   return (
     <Sheet open={isOpen} onOpenChange={onClose}>
@@ -54,7 +70,7 @@ const Cart = ({ isOpen, onClose, items, onUpdateQuantity, onRemoveItem, onChecko
                 <div className="flex-1 space-y-2">
                   <h4 className="font-semibold line-clamp-1">{item.name}</h4>
                   <p className="text-sm text-muted-foreground">Tamanho: {item.size}</p>
-                  <p className="text-primary font-bold">R$ {item.price.toFixed(2)}</p>
+                  <p className="text-primary font-bold">{formatBRL(item.price)}</p>
                   
                   <div className="flex items-center gap-2">
                     <Button
@@ -91,20 +107,44 @@ const Cart = ({ isOpen, onClose, items, onUpdateQuantity, onRemoveItem, onChecko
         </div>
 
         {items.length > 0 && (
-          <SheetFooter className="flex-col gap-4">
-            <Separator />
-            <div className="flex justify-between items-center text-lg font-bold">
-              <span>TOTAL:</span>
-              <span className="text-primary text-2xl">R$ {total.toFixed(2)}</span>
-            </div>
-            <Button
-              onClick={onCheckout}
-              size="lg"
-              className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-lg glow-soft"
-            >
-              FINALIZAR NO WHATSAPP
-            </Button>
-          </SheetFooter>
+        <div className="flex flex-col gap-4">
+          <div className="space-y-2 w-full">
+            <Input
+              placeholder="Nome completo"
+              value={clienteNome}
+              onChange={(e) => setClienteNome(e.target.value)}
+              autoComplete="name"
+            />
+            <Input
+              placeholder="Telefone (WhatsApp) — Ex.: (75) 98128-4738"
+              value={clienteTelefone}
+              onChange={(e) => setClienteTelefone(formatPhoneMask(e.target.value))}
+              type="tel"
+              inputMode="numeric"
+              autoComplete="tel"
+            />
+          </div>
+          <Separator />
+          <div className="flex justify-between items-center text-lg font-bold">
+            <span>TOTAL:</span>
+            <span className="text-primary text-2xl">{formatBRL(total)}</span>
+          </div>
+          <Button
+            onClick={() => {
+              const nome = clienteNome.trim();
+              const tel = clienteTelefone.trim();
+              if (!nome || !tel) {
+                toast.error("Preencha nome e telefone para finalizar");
+                return;
+              }
+              onCheckout(nome, tel);
+            }}
+            size="lg"
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-lg glow-soft"
+          >
+            FINALIZAR NO WHATSAPP
+          </Button>
+        </div>
         )}
       </SheetContent>
     </Sheet>

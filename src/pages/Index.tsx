@@ -10,6 +10,7 @@ import AOS from "aos";
 import "aos/dist/aos.css";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { formatBRL } from "@/lib/utils";
 
 // Mock products data
 const mockProducts: Product[] = [
@@ -203,18 +204,72 @@ const Index = () => {
     setCartItems((prev) => prev.filter((item) => !(item.id === id && item.size === size)));
   };
 
-  const handleCheckout = () => {
+  const normalizePhone = (raw: string) => raw.replace(/\D+/g, "");
+
+  // Polyfill simples de UUID v4 para ambientes sem crypto.randomUUID
+  const generateUUID = () => {
+  // Retorna string no formato xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  let dt = new Date().getTime();
+  const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+  const r = (dt + Math.random() * 16) % 16 | 0;
+  dt = Math.floor(dt / 16);
+  return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+  return uuid;
+  };
+
+  const handleCheckout = async (clienteNome: string, clienteTelefone: string) => {
     const total = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-    const message = `🛍️ *Novo Pedido - FUT75 Store*\n\n${cartItems
+    // Montar payload de pedido
+    const itens = cartItems.map((item) => ({
+      produto: item.name,
+      tamanho: item.size,
+      quantidade: item.quantity,
+      product_id: item.id,
+      preco_unitario: item.price,
+    }));
+
+    const hasSupabase = !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+    let pedidoId: string | null = null;
+
+    if (hasSupabase) {
+      try {
+        const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
+          ? (crypto as any).randomUUID()
+          : generateUUID();
+        const { error } = await supabase
+          .from("pedidos")
+          .insert({
+            id: uuid,
+            cliente_nome: clienteNome,
+            cliente_telefone: clienteTelefone,
+            itens,
+            valor_total: total,
+            status: "pendente",
+          });
+        if (error) throw error;
+        pedidoId = uuid;
+      } catch (e: any) {
+        toast.error("Falha ao registrar pedido", { description: e?.message });
+      }
+    }
+
+    const message = `🛍️ *Novo Pedido - FUT75 Store*\n\nCliente: ${clienteNome}\nTelefone: ${clienteTelefone}\n\n${cartItems
       .map(
         (item) =>
-          `• ${item.name}\n  Tamanho: ${item.size}\n  Qtd: ${item.quantity}\n  Subtotal: R$ ${(item.price * item.quantity).toFixed(2)}`
+          `• ${item.name}\n  Tamanho: ${item.size}\n  Qtd: ${item.quantity}\n  Subtotal: ${formatBRL(item.price * item.quantity)}`
       )
-      .join("\n\n")}\n\n💰 *TOTAL: R$ ${total.toFixed(2)}*`;
+      .join("\n\n")}\n\n💰 *TOTAL: ${formatBRL(total)}*\n\nPedido ID: ${pedidoId ?? "—"}`;
 
-    const whatsappUrl = `https://wa.me/5575981284738?text=${encodeURIComponent(message)}`;
-    window.open(whatsappUrl, "_blank");
+    const phoneRaw = normalizePhone(import.meta.env.VITE_WHATSAPP_PHONE ?? "5575981284738");
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneRaw}&text=${encodeURIComponent(message)}`;
+
+    // Esvaziar o carrinho e fechar o modal antes de redirecionar para o WhatsApp
+    setCartItems([]);
+    setIsCartOpen(false);
+
+    window.location.href = whatsappUrl;
   };
 
   const cartItemCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);

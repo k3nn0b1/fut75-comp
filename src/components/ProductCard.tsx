@@ -10,6 +10,7 @@ import { Cloudinary } from "@cloudinary/url-gen";
 import { fill } from "@cloudinary/url-gen/actions/resize";
 import { format } from "@cloudinary/url-gen/actions/delivery";
 import { quality } from "@cloudinary/url-gen/actions/delivery";
+import { formatBRL } from "@/lib/utils";
 
 export interface Product {
   id: number;
@@ -88,6 +89,16 @@ const ProductCard = ({ product, onAddToCart }: ProductCardProps) => {
     ? (totalBySize ?? 0) <= 0
     : (product.stock !== undefined && product.stock <= 0);
 
+  // Filtra tamanhos visíveis: remove tamanhos com estoque zero quando houver controle por tamanho
+  const displaySizes = useMemo(() => {
+    if (!hasStockBySize) return sortedSizes;
+    return sortedSizes.filter((size) => {
+      const key = size.trim();
+      const qty = Number(product.stockBySize?.[key] ?? product.stockBySize?.[size] ?? 0);
+      return qty > 0;
+    });
+  }, [sortedSizes, product.stockBySize, hasStockBySize]);
+
   return (
     <Card className="group overflow-hidden border-border/50 bg-card hover:border-primary/50 transition-smooth hover:glow-soft">
       <div
@@ -122,35 +133,37 @@ const ProductCard = ({ product, onAddToCart }: ProductCardProps) => {
         
         <div className="flex items-center justify-between">
           <span className="text-2xl font-bold text-primary">
-            R$ {product.price.toFixed(2)}
+            {formatBRL(product.price)}
           </span>
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm text-muted-foreground font-medium">
-            Tamanho:
-          </label>
-          <div className="flex gap-2">
-            {sortedSizes.map((size) => {
-              const key = size.trim();
-              const qty = product.stockBySize ? Number(product.stockBySize[key] ?? product.stockBySize[size] ?? 0) : undefined;
-              return (
-                <button
-                  key={key}
-                  onClick={() => setSelectedSize(key)}
-                  className={`px-4 py-2 rounded-md border transition-smooth font-medium ${
-                    selectedSize === key
-                      ? "bg-primary/90 text-primary-foreground border-primary glow-soft"
-                      : "border-border hover:border-primary/50 bg-background text-foreground"
-                  }`}
-                >
-                  {key}
-                </button>
-              );
-            })}
+        {!isSoldOut && (
+          <div className="space-y-2">
+            <label className="text-sm text-muted-foreground font-medium">
+              Tamanho:
+            </label>
+            <div className="flex gap-2">
+              {displaySizes.map((size) => {
+                const key = size.trim();
+                const qty = product.stockBySize ? Number(product.stockBySize[key] ?? product.stockBySize[size] ?? 0) : undefined;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setSelectedSize(key)}
+                    className={`px-4 py-2 rounded-md border transition-smooth font-medium ${
+                      selectedSize === key
+                        ? "bg-primary/90 text-primary-foreground border-primary glow-soft"
+                        : "border-border hover:border-primary/50 bg-background text-foreground"
+                    }`}
+                  >
+                    {key}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
-
+        )}
+        
         {showStockDetails && (
           <div className="mt-3 p-3 rounded-md border border-border/50 bg-muted/50">
             <p className="text-sm text-muted-foreground mb-2">Estoque por tamanho</p>
