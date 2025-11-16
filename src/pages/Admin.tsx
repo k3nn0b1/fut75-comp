@@ -138,6 +138,8 @@ const [adminCart, setAdminCart] = useState<AdminCartItem[]>([]);
 
 // Seleção do produto/tamanho
 const [productQuery, setProductQuery] = useState("");
+const [stockQuery, setStockQuery] = useState("");
+const [imagesQuery, setImagesQuery] = useState("");
 const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
 const [selectedSize, setSelectedSize] = useState<string | null>(null);
 const [quantity, setQuantity] = useState<string>('1');
@@ -1281,7 +1283,12 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                   <p className="text-muted-foreground">Nenhum produto cadastrado ainda.</p>
                 ) : (
                   <div className="space-y-3">
-                    {storedProducts.map((p) => {
+                    <div className="flex items-center gap-2">
+                      <Input value={stockQuery} onChange={(e) => setStockQuery(e.target.value)} placeholder="Buscar por nome ou categoria..." />
+                    </div>
+                    {storedProducts
+                      .filter((p) => `${p.name} ${p.category || ''}`.toLowerCase().includes(stockQuery.toLowerCase()))
+                      .map((p) => {
                       const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ["U"];  
                       const selected = selectedSizes[p.id] || sizes[0];
                       const currentStockBySize = p.stockBySize || {};
@@ -1677,42 +1684,52 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                 {storedProducts.filter((p) => p.image || p.publicId).length === 0 ? (
                   <p className="text-muted-foreground">Nenhuma imagem vinculada a itens.</p>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {storedProducts
+                  <div className="space-y-2">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Input value={imagesQuery} onChange={(e) => setImagesQuery(e.target.value)} placeholder="Buscar por nome, categoria ou ID..." />
+                  </div>
+                  {(() => {
+                    const images = storedProducts
                       .filter((p) => p.image || p.publicId)
-                      .map((p) => (
-                        <div key={p.id} className="rounded-md border p-3 flex flex-col gap-3">
-                          <div className="flex items-center gap-3">
-                            <img
-                              src={p.publicId ? `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/${p.publicId}` : p.image}
-                              alt={p.name}
-                              className="w-20 h-20 object-cover rounded"
-                            />
-                            <div>
-                              <div className="font-medium">{p.name}</div>
-                              <div className="text-sm text-muted-foreground">ID: {p.id}</div>
+                      .filter((p) => `${p.name} ${p.category || ''} ${String(p.id ?? '')}`.toLowerCase().includes(imagesQuery.toLowerCase()));
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {images.map((p) => (
+                          <div key={p.id} className="rounded-md border p-3 flex flex-col gap-3">
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={p.publicId ? `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/${p.publicId}` : p.image}
+                                alt={p.name}
+                                className="w-20 h-20 object-cover rounded"
+                              />
+                              <div>
+                                <div className="font-medium">{p.name}</div>
+                                <div className="text-sm text-muted-foreground">ID: {p.id}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {/* input de arquivo oculto, acionado pelo botão Alterar imagem */}
+                              <input
+                                ref={(el) => { fileInputRefs.current[p.id] = el; }}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => handleSelectReplaceFile(p.id, e.target.files?.[0] ?? undefined)}
+                              />
+                              <Button variant="outline" onClick={() => triggerFilePickerForProduct(p.id)} disabled={uploading}>Alterar imagem</Button>
+                              <Button
+                                variant="ghost"
+                                className="text-destructive hover:bg-destructive/10"
+                                onClick={() => handleRemoveProductImage(p.id)}
+                              >
+                                Remover imagem
+                              </Button>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            {/* input de arquivo oculto, acionado pelo botão Alterar imagem */}
-                            <input
-                              ref={(el) => { fileInputRefs.current[p.id] = el; }}
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              onChange={(e) => handleSelectReplaceFile(p.id, e.target.files?.[0] ?? undefined)}
-                            />
-                            <Button variant="outline" onClick={() => triggerFilePickerForProduct(p.id)} disabled={uploading}>Alterar imagem</Button>
-                            <Button
-                              variant="ghost"
-                              className="text-destructive hover:bg-destructive/10"
-                              onClick={() => handleRemoveProductImage(p.id)}
-                            >
-                              Remover imagem
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
+                    );
+                  })()}
                   </div>
                 )}
               </CardContent>
