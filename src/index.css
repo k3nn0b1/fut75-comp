@@ -98,6 +98,15 @@ All colors MUST be HSL.
   .gradient-hero {
     background: var(--gradient-hero);
   }
+
+  /* Hide scrollbars but keep scrolling */
+  .scrollbar-hide {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+  }
 }
 
 /* Animated Football Background */
@@ -195,4 +204,28 @@ All colors MUST be HSL.
   left: 15%;
   animation: float-2 23s infinite ease-in-out;
   animation-delay: -3s;
+}
+
+/* Style number input spin buttons to match neon theme */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Firefox */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Custom spinner using background for consistency with theme */
+input[type="number"] {
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--background));
+}
+
+/* Optional: add small up/down adorners via background gradients (subtle, dark) */
+input[type="number"] {
+  /* Keep borders and focus consistent with theme */
+  border-color: hsl(var(--input));
 }

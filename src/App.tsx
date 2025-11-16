@@ -27,27 +27,21 @@ const AdminGuard = () => {
 
         if (IS_SUPABASE_READY) {
           const { data: { user }, error } = await supabase.auth.getUser();
-          if (error) {
+          if (error && (error as any)?.name !== "AuthSessionMissingError") {
             console.error("Erro ao obter usuário do Supabase:", error);
             toast.error("Falha ao verificar sessão");
             setIsAuth(false);
             navigate("/login", { replace: true });
             return;
           }
-          if (user && sessionFlag) {
-            setIsAuth(true);
-          } else {
-            setIsAuth(false);
-            navigate("/login", { replace: true });
-          }
+          const ok = !!user || sessionFlag;
+          setIsAuth(ok);
+          if (!ok) navigate("/login", { replace: true });
         } else {
           // Modo desenvolvimento: sem Supabase, valida apenas pelo flag de sessão
-          if (sessionFlag) {
-            setIsAuth(true);
-          } else {
-            setIsAuth(false);
-            navigate("/login", { replace: true });
-          }
+          const ok = sessionFlag;
+          setIsAuth(ok);
+          if (!ok) navigate("/login", { replace: true });
         }
       } catch (e) {
         console.error("Erro inesperado na verificação do AdminGuard:", e);

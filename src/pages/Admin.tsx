@@ -13,6 +13,7 @@ import { Pencil, Check, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBRL } from "@/lib/utils";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel } from "@/components/ui/alert-dialog";
 
 // Modelo de produto
 interface AdminProduct {
@@ -104,9 +105,237 @@ const [categoryEditValue, setCategoryEditValue] = useState("");
 const [pedidos, setPedidos] = useState<any[]>([]);
 const [pedidoStatusFilter, setPedidoStatusFilter] = useState<string>("todos");
 const [pedidoSearch, setPedidoSearch] = useState<string>("");
+const [pedidoPage, setPedidoPage] = useState(1);
+const [pageSize, setPageSize] = useState(15);
 const [confirmAction, setConfirmAction] = useState<{ id: string; action: "concluir" | "cancelar" } | null>(null);
 const [pedidoDetalhesId, setPedidoDetalhesId] = useState<string | number | null>(null);
 const [pedidoSeq, setPedidoSeq] = useState<Record<string, number>>({});
+const [devolucaoPedidoId, setDevolucaoPedidoId] = useState<string | null>(null);
+const [devolucaoParcial, setDevolucaoParcial] = useState(false);
+const [devolucaoQuantidades, setDevolucaoQuantidades] = useState<number[]>([]);
+const [confirmTotalOpen, setConfirmTotalOpen] = useState(false);
+
+// Defaultar devolução para parcial e zerar quantidades ao abrir modal
+useEffect(() => {
+  if (devolucaoPedidoId) {
+    setDevolucaoParcial(true);
+    const pedido = pedidos.find((p) => String(p.id) === String(devolucaoPedidoId));
+    const itens = pedido?.itens || [];
+    setDevolucaoQuantidades(itens.map(() => 0));
+  }
+}, [devolucaoPedidoId, pedidos]);
+
+// Tabs controlada para alternar após criar pedido
+const [activeTab, setActiveTab] = useState("pedidos");
+
+// Modal de novo pedido (admin)
+const [newPedidoOpen, setNewPedidoOpen] = useState(false);
+const [confirmDebitarOpen, setConfirmDebitarOpen] = useState(false);
+
+// Carrinho do admin
+type AdminCartItem = { id: number; name: string; size: string; quantity: number; price: number };
+const [adminCart, setAdminCart] = useState<AdminCartItem[]>([]);
+
+// Seleção do produto/tamanho
+const [productQuery, setProductQuery] = useState("");
+const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
+const [selectedSize, setSelectedSize] = useState<string | null>(null);
+const [quantity, setQuantity] = useState<string>('1');
+
+// Cliente (opcional)
+const [informarCliente, setInformarCliente] = useState(true);
+const [clienteNome, setClienteNome] = useState("");
+const [clienteTelefone, setClienteTelefone] = useState("");
+
+const addToAdminCart = () => {
+  const qty = Math.max(1, parseInt(quantity || '1') || 1);
+  if (!selectedProductId || !selectedSize || qty <= 0) return;
+  const prod = storedProducts.find(p => p.id === selectedProductId);
+  if (!prod) return;
+  const estoque = Math.max(0, Number((prod.stockBySize || {})[selectedSize] || 0));
+  if (estoque === 0) {
+    toast.error("Tamanho sem estoque");
+    return;
+  }
+  const existingItem = adminCart.find(it => it.id === selectedProductId && it.size === selectedSize);
+  const combined = (existingItem?.quantity || 0) + qty;
+  if (combined > estoque) {
+    toast.error(`Quantidade total (${combined}) excede estoque disponível (${estoque})`);
+    return;
+  }
+  setAdminCart(prev => {
+    const idx = prev.findIndex(it => it.id === selectedProductId && it.size === selectedSize);
+    const next = [...prev];
+    if (idx >= 0) {
+      next[idx] = { ...next[idx], quantity: next[idx].quantity + qty };
+    } else {
+      next.push({ id: selectedProductId, name: prod.name, size: selectedSize, quantity: qty, price: Number(prod.price || 0) });
+    }
+    return next;
+  });
+  setQuantity('1');
+};
+
+const removeFromAdminCart = (i: number) => {
+  setAdminCart(prev => prev.filter((_, idx) => idx !== i));
+};
+
+const updateAdminCartQuantity = (i: number, newQty: number) => {
+  if (newQty < 1) return;
+  const item = adminCart[i];
+  const prod = storedProducts.find(p => p.id === item.id);
+  const estoque = Math.max(0, Number((prod?.stockBySize || {})[item.size] || 0));
+  if (newQty > estoque) {
+    if (estoque >= 1) {
+      toast.info(`Estoque disponível: ${estoque}.`);
+      setAdminCart(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: estoque } : it));
+    } else {
+      toast.error("Sem estoque para este tamanho. Removi o item do carrinho.");
+      removeFromAdminCart(i);
+    }
+    return;
+  }
+  setAdminCart(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: newQty } : it));
+};
+
+const adminCartTotal = adminCart.reduce((sum, it) => sum + it.price * it.quantity, 0);
+
+const generateUUID = () => {
+  let dt = new Date().getTime();
+  const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = (dt + Math.random() * 16) % 16 | 0;
+    dt = Math.floor(dt / 16);
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+  return uuid;
+};
+
+const handleCreateAdminOrder = async (debitarEstoque: boolean) => {
+  if (adminCart.length === 0) {
+    toast.error("Adicione itens ao pedido");
+  return;
+  }
+  const nome = informarCliente && clienteNome.trim() ? clienteNome.trim() : "LOJA";
+  const telefone = informarCliente && clienteTelefone.trim() ? clienteTelefone.trim() : "(XX) XXXXXX-XXXX";
+
+  const itens = adminCart.map(it => ({
+    produto: it.name,
+    tamanho: it.size,
+    quantidade: it.quantity,
+    product_id: it.id,
+    preco_unitario: it.price,
+  }));
+
+  const hasSupabase = !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+  try {
+    // debitarEstoque é definido pelo modal de confirmação
+    if (hasSupabase) {
+      if (debitarEstoque) {
+        // Valida estoque com base no banco
+        const previousStates: Array<{ id: number; prev: Record<string, number>; prevTotal: number }> = [];
+        for (const it of adminCart) {
+          const { data: prodData, error: fetchErr } = await supabase.from('products').select('*').eq('id', it.id).single();
+          if (fetchErr) throw fetchErr;
+          if (!prodData) throw new Error('Produto não encontrado');
+          const stockBySize: Record<string, number> = prodData.stockBySize || {};
+          const current = Math.max(0, Number(stockBySize[it.size] || 0));
+          if (it.quantity > current) {
+            throw new Error(`Estoque insuficiente para ${it.name} (${it.size}). Disponível: ${current}`);
+          }
+          previousStates.push({ id: it.id, prev: { ...stockBySize }, prevTotal: Number(prodData.stock || 0) });
+        }
+        // Aplica baixa de estoque imediatamente
+        for (const it of adminCart) {
+          const { data: prodData } = await supabase.from('products').select('*').eq('id', it.id).single();
+          const stockBySize: Record<string, number> = (prodData?.stockBySize || {});
+          const current = Math.max(0, Number(stockBySize[it.size] || 0));
+          const next = Math.max(0, current - it.quantity);
+          const nextStockBySize = { ...stockBySize, [it.size]: next };
+          const nextTotal = Object.values(nextStockBySize).reduce((acc, n) => acc + (Number(n) || 0), 0);
+          const { error: updErr } = await supabase.from('products').update({ stockBySize: nextStockBySize, stock: nextTotal }).eq('id', it.id);
+          if (updErr) {
+            // Reverter atualizações de estoque se houver falha
+            for (const prev of previousStates) {
+              await supabase.from('products').update({ stockBySize: prev.prev, stock: prev.prevTotal }).eq('id', prev.id);
+            }
+            throw updErr;
+          }
+        }
+
+        // Inserir pedido após baixa bem-sucedida
+        const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
+          ? (crypto as any).randomUUID()
+          : generateUUID();
+        const { error } = await supabase
+          .from("pedidos")
+          .insert({
+            id: uuid,
+            cliente_nome: nome,
+            cliente_telefone: telefone,
+            itens,
+            valor_total: adminCartTotal,
+            status: "concluido",
+          });
+        if (error) throw error;
+
+        // Atualiza lista de pedidos imediatamente
+        const { data: pedidosData } = await supabase
+          .from("pedidos")
+          .select("*")
+          .order("data_criacao", { ascending: false });
+        if (pedidosData) setPedidos(sortPedidos(pedidosData as any[]));
+
+        // Atualiza UI local dos produtos
+        setStoredProducts((prev) => {
+          let next = [...prev];
+          for (const it of adminCart) {
+            next = next.map(p => {
+              if (p.id === it.id) {
+                const base = { ...(p.stockBySize || {}) } as Record<string, number>;
+                const cur = Math.max(0, Number(base[it.size] || 0));
+                const novo = Math.max(0, cur - it.quantity);
+                const nextStockBySize = { ...base, [it.size]: novo };
+                const nextTotal = Object.values(nextStockBySize).reduce((acc, n) => acc + (Number(n) || 0), 0);
+                return { ...p, stockBySize: nextStockBySize, stock: nextTotal } as any;
+              }
+              return p;
+            });
+          }
+          return next;
+        });
+      } else {
+        // Inserir pedido como pendente (sem baixa de estoque)
+        const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
+          ? (crypto as any).randomUUID()
+          : generateUUID();
+        const { error } = await supabase
+          .from("pedidos")
+          .insert({
+            id: uuid,
+            cliente_nome: nome,
+            cliente_telefone: telefone,
+            itens,
+            valor_total: adminCartTotal,
+            status: "pendente",
+          });
+        if (error) throw error;
+
+        // Atualiza lista de pedidos imediatamente
+        const { data: pedidosData } = await supabase
+          .from("pedidos")
+          .select("*")
+          .order("data_criacao", { ascending: false });
+        if (pedidosData) setPedidos(sortPedidos(pedidosData as any[]));
+      }
+    }
+    toast.success(debitarEstoque ? "Pedido concluído e baixa de estoque aplicada" : "Pedido criado como pendente (sem baixa de estoque)");
+    setAdminCart([]);
+    setNewPedidoOpen(false);
+    setActiveTab("pedidos");
+  } catch (e: any) {
+    toast.error("Falha ao criar pedido", { description: e?.message });
+  }
+};
 
 
 // Função de ordenação: pendentes primeiro; depois concluídos/cancelados; dentro do grupo, mais recentes primeiro
@@ -160,6 +389,8 @@ useEffect(() => {
 
 // Filtro
 const filteredPedidos = pedidos.filter((p) => {
+
+
   const matchStatus = pedidoStatusFilter === 'todos' || p.status === pedidoStatusFilter;
   const term = pedidoSearch.toLowerCase().trim();
   const matchSearch = term === ''
@@ -167,6 +398,27 @@ const filteredPedidos = pedidos.filter((p) => {
     || (String(p.id).toLowerCase().includes(term));
   return matchStatus && matchSearch;
 });
+
+// Ordenar por mais recentes primeiro (últimos pedidos)
+
+const orderedPedidosByDate = [...filteredPedidos].sort((a, b) => {
+  const ta = new Date(a.data_criacao).getTime();
+  const tb = new Date(b.data_criacao).getTime();
+  return tb - ta; // mais novo primeiro
+});
+const totalPages = Math.max(1, Math.ceil(orderedPedidosByDate.length / pageSize));
+
+
+useEffect(() => { setPedidoPage(prev => Math.min(prev, totalPages)); }, [totalPages]);
+
+const startIndex = (pedidoPage - 1) * pageSize;
+const pageSlice = orderedPedidosByDate.slice(startIndex, startIndex + pageSize);
+// Priorizar pendentes dentro da própria página, preservando ordem por data
+const visiblePedidos = [
+  ...pageSlice.filter(p => p.status === 'pendente'),
+  ...pageSlice.filter(p => p.status !== 'pendente'),
+];
+
 
 // Sequencial estável por ordem de criação (mais antigo = 1)
 useEffect(() => {
@@ -190,6 +442,84 @@ const applyBaixaDeEstoque = async (pedido: any) => {
     const next = Math.max(0, current - qty);
     const nextStockBySize = { ...stockBySize, [tamanho]: next };
     await supabase.from('products').update({ stockBySize: nextStockBySize }).eq('id', productId);
+  }
+};
+
+// Devolução de estoque (total ou parcial).
+// quantidades: array do mesmo tamanho de pedido.itens com a quantidade a devolver por item.
+const applyDevolucaoEstoqueParcial = async (pedido: any, quantidades: number[]) => {
+  try {
+    // Atualiza estoque somando as quantidades devolvidas
+    for (let i = 0; i < (pedido.itens || []).length; i++) {
+      const it = pedido.itens[i];
+      const already = Number(it.devolvido || 0);
+      const maxReturn = Math.max(0, Number(it.quantidade || 0) - already);
+      const qty = Math.max(0, Math.min(maxReturn, Number(quantidades[i] || 0)));
+      if (qty <= 0) continue;
+      const productId = it.product_id;
+      const tamanho = it.tamanho;
+      const { data: prodData } = await supabase.from('products').select('*').eq('id', productId).single();
+      if (!prodData) continue;
+      const stockBySize = prodData.stockBySize || {};
+      const current = Number(stockBySize[tamanho] || 0);
+      const next = Math.max(0, current + qty);
+      const nextStockBySize = { ...stockBySize, [tamanho]: next };
+      const nextTotal = Object.values(nextStockBySize).reduce((acc, n) => acc + (Number(n) || 0), 0);
+      await supabase.from('products').update({ stockBySize: nextStockBySize, stock: nextTotal }).eq('id', productId);
+    }
+
+    // Atualiza itens do pedido com flag de devolvido
+    const newItens = (pedido.itens || []).map((it: any, idx: number) => {
+      const already = Number(it.devolvido || 0);
+      const maxReturn = Math.max(0, Number(it.quantidade || 0) - already);
+      const qty = Math.max(0, Math.min(maxReturn, Number(quantidades[idx] || 0)));
+      if (qty <= 0) return it;
+      return { ...it, devolvido: already + qty };
+    });
+
+    const totalDevolvido = newItens.reduce((sum: number, it: any, i: number) => sum + Math.max(0, Number(it.devolvido || 0) - Number((pedido.itens?.[i]?.devolvido || 0))), 0);
+
+    // Se devolveu todos itens (somando devolvido == somando quantidade), marcar status 'devolvido'
+    const isTotalReturn = newItens.every((it: any) => Number(it.devolvido || 0) >= Number(it.quantidade || 0));
+
+    const { error } = await supabase.from('pedidos').update({ itens: newItens, status: isTotalReturn ? 'devolvido' : 'parcialmente_devolvido' }).eq('id', pedido.id);
+    if (error) throw error;
+
+    // Atualiza UI local
+    setStoredProducts((prev) => {
+      let next = [...prev];
+      for (let i = 0; i < (pedido.itens || []).length; i++) {
+        const it = pedido.itens[i];
+        const already = Number(it.devolvido || 0);
+        const maxReturn = Math.max(0, Number(it.quantidade || 0) - already);
+        const qty = Math.max(0, Math.min(maxReturn, Number(quantidades[i] || 0)));
+        if (qty <= 0) continue;
+        next = next.map(p => {
+          if (p.id === it.product_id) {
+            const base = { ...(p.stockBySize || {}) } as Record<string, number>;
+            const cur = Math.max(0, Number(base[it.tamanho] || 0));
+            const novo = Math.max(0, cur + qty);
+            const nextStockBySize = { ...base, [it.tamanho]: novo };
+            const nextTotal = Object.values(nextStockBySize).reduce((acc, n) => acc + (Number(n) || 0), 0);
+            return { ...p, stockBySize: nextStockBySize, stock: nextTotal } as any;
+          }
+          return p;
+        });
+      }
+      return next;
+    });
+
+    setPedidos(prev => {
+      const idx = prev.findIndex((pp) => pp.id === pedido.id);
+      if (idx < 0) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], itens: newItens, status: isTotalReturn ? 'devolvido' : 'parcialmente_devolvido' };
+      return sortPedidos(next);
+    });
+
+    toast.success('Devolução aplicada e estoque atualizado');
+  } catch (e: any) {
+    toast.error('Falha ao aplicar devolução', { description: e?.message });
   }
 };
 
@@ -646,7 +976,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
         </div>
 
 
-        <Tabs defaultValue="pedidos">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
               <TabsTrigger value="pedidos">Pedidos</TabsTrigger>
               <TabsTrigger value="products">Produtos</TabsTrigger>
@@ -678,12 +1008,14 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                       <option value="todos">Todos</option>
                       <option value="pendente">Pendente</option>
                       <option value="concluido">Concluído</option>
+                      <option value="devolvido">Devolvido</option>
+<option value="parcialmente_devolvido">Parcialmente Devolvido</option>
                       <option value="cancelado">Cancelado</option>
                     </select>
                   </div>
                 </div>
 
-                {filteredPedidos.length === 0 ? (
+                {orderedPedidosByDate.length === 0 ? (
                   <p className="text-muted-foreground">Nenhum pedido encontrado.</p>
                 ) : (
                   <div className="overflow-x-auto rounded-md border">
@@ -700,7 +1032,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredPedidos.map((p) => (
+                        {visiblePedidos.map((p) => (
                           <tr key={p.id} onClick={() => setPedidoDetalhesId(p.id)} className="hover:bg-muted/40 cursor-pointer">
                             <td className="px-3 py-2 align-middle whitespace-nowrap">
                               <TooltipProvider>
@@ -718,8 +1050,10 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                             <td className="px-3 py-2 align-middle">{formatBRL(Number(p.valor_total || 0))}</td>
                             <td className="px-3 py-2 align-middle">
                               {p.status === 'pendente' && <Badge className="bg-amber-500 text-black">Pendente</Badge>}
-                              {p.status === 'concluido' && <span className="text-green-500 font-medium">Concluído</span>}
-                              {p.status === 'cancelado' && <span className="text-white font-medium">Cancelado</span>}
+{p.status === 'concluido' && <span className="text-green-500 font-medium">Concluído</span>}
+{p.status === 'parcialmente_devolvido' && <span className="text-amber-300 font-medium">Parcialmente Devolvido</span>}
+{p.status === 'devolvido' && <span className="text-amber-400 font-medium">Devolvido</span>}
+{p.status === 'cancelado' && <span className="text-white font-medium">Cancelado</span>}
                             </td>
                             <td className="px-3 py-2 align-middle">
                               <div className="flex items-center gap-2">
@@ -755,6 +1089,49 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                         ))}
                       </tbody>
                     </table>
+                    <div className="flex items-center justify-between p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Mostrando {pageSize} por página</span>
+                        <select
+                          className="rounded-md border px-2 py-1 text-xs bg-background text-foreground"
+                          value={pageSize}
+                          onChange={(e) => setPageSize(Number(e.target.value))}
+                        >
+                          <option value={15}>15</option>
+                          <option value={30}>30</option>
+                          <option value={50}>50</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" disabled={pedidoPage <= 1} onClick={() => setPedidoPage((p) => Math.max(1, p - 1))}>Anterior</Button>
+                        {(() => {
+                          const windowSize = 5;
+                          const pages: (number | 'ellipsis')[] = [];
+                          const start = Math.max(1, pedidoPage - Math.floor(windowSize / 2));
+                          const end = Math.min(totalPages, start + windowSize - 1);
+                          const adjustedStart = Math.max(1, end - windowSize + 1);
+                          if (adjustedStart > 1) {
+                            pages.push(1);
+                            if (adjustedStart > 2) pages.push('ellipsis');
+                          }
+                          for (let n = adjustedStart; n <= end; n++) pages.push(n);
+                          if (end < totalPages) {
+                            if (end < totalPages - 1) pages.push('ellipsis');
+                            pages.push(totalPages);
+                          }
+                          return pages.map((item, idx) => (
+                            item === 'ellipsis' ? (
+                              <span key={`el-${idx}`} className="px-1 text-xs text-muted-foreground">…</span>
+                            ) : (
+                              <Button key={item} variant={item === pedidoPage ? "default" : "outline"} onClick={() => setPedidoPage(item as number)} className="h-8 px-2 text-xs">
+                                {item}
+                              </Button>
+                            )
+                          ));
+                        })()}
+                        <Button variant="outline" disabled={pedidoPage >= totalPages} onClick={() => setPedidoPage((p) => Math.min(totalPages, p + 1))}>Próxima</Button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -929,7 +1306,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                           {isExpanded && (
                             <div className="p-3 border-t border-border/50 space-y-4">
                               {/* Substituir bloco de edição por opções completas */}
-                              <div className="space-y-4">
+                              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1 scrollbar-hide">
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                   <div>
                                     <Label>Nome</Label>
@@ -1450,7 +1827,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                     <p className="text-sm"><span className="text-white">Data/Hora:</span> <span className="text-green-500">{pedido?.data_criacao ? new Date(pedido.data_criacao).toLocaleString() : '—'}</span></p>
                   </div>
                   <div className="rounded-md border border-green-600/40 p-3 bg-black/40">
-                    <p className="text-sm"><span className="text-white">Status:</span> <span className={pedido?.status === 'pendente' ? 'text-amber-500' : pedido?.status === 'cancelado' ? 'text-white' : 'text-green-500'}>{pedido?.status || '—'}</span></p>
+                    <p className="text-sm"><span className="text-white">Status:</span> <span className={pedido?.status === 'pendente' ? 'text-amber-500' : pedido?.status === 'cancelado' ? 'text-white' : pedido?.status === 'devolvido' ? 'text-amber-400' : pedido?.status === 'parcialmente_devolvido' ? 'text-amber-300' : 'text-green-500'}>{pedido?.status === 'parcialmente_devolvido' ? 'Parcialmente Devolvido' : (pedido?.status || '—')}</span></p>
                     <p className="text-sm"><span className="text-white">Total:</span> <span className="text-green-500">{formatBRL(Number(pedido?.valor_total || 0))}</span></p>
                   </div>
                 </div>
@@ -1458,19 +1835,329 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                    <p className="text-white text-sm mb-2">Itens detalhados</p>
                    <div className="space-y-2">
                      {itens.map((it: any, i: number) => (
-                       <div key={i} className="rounded-md border border-green-600 bg-black/40 p-2 grid grid-cols-[auto_2rem_auto] items-center gap-2">
+                       <div key={i} className="rounded-md border border-green-600 bg-black/40 p-2 grid grid-cols-[auto_2rem_auto_auto] items-center gap-2">
                          <span className="text-white">{it.produto}</span>
                         <Badge variant="outline" className="w-8 justify-center text-xs">{it.tamanho}</Badge>
                         <span className="text-green-500">x{it.quantidade}</span>
+                        {Number(it.devolvido || 0) > 0 && (
+                          <span className="text-amber-400 text-xs">Devolvido: {it.devolvido}</span>
+                        )}
                        </div>
                      ))}
                      {itens.length === 0 && <p className="text-sm text-muted-foreground">Sem itens.</p>}
                    </div>
+                   {pedido?.status === 'concluido' && (
+                     <div className="mt-3">
+                       <Button variant="destructive" onClick={() => {
+                         const itensPedido = pedido?.itens || [];
+                         if (itensPedido.length <= 1) {
+                           const qs = itensPedido.map((it: any) => Math.max(0, Number(it.quantidade || 0) - Number(it.devolvido || 0)));
+                           applyDevolucaoEstoqueParcial(pedido, qs);
+                         } else {
+                           setDevolucaoPedidoId(String(pedido?.id));
+                         }
+                       }}>Devolver pedido</Button>
+                     </div>
+                   )}
                  </div>
               </div>
             );
           })()}
 
+        </DialogContent>
+      </Dialog>
+
+      {devolucaoPedidoId && (
+        <Dialog open={true} onOpenChange={(o) => { if (!o) { setDevolucaoPedidoId(null); setDevolucaoParcial(false); setDevolucaoQuantidades([]); } }}>
+          <DialogContent className="bg-black text-green-400 border border-green-600">
+            <DialogHeader>
+              <DialogTitle className="text-white">Devolução do pedido #{pedidoSeq[String(devolucaoPedidoId)] ?? '—'}</DialogTitle>
+              <DialogDescription className="text-white/70">Escolha devolução total ou parcial.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="flex gap-2">
+                <Button variant={devolucaoParcial ? "outline" : "default"} onClick={() => setConfirmTotalOpen(true)}>Devolução total</Button>
+                <Button variant={devolucaoParcial ? "default" : "outline"} onClick={() => {
+                  setDevolucaoParcial(true);
+                  const pedido = pedidos.find(p => String(p.id) === String(devolucaoPedidoId));
+                  const itens = pedido?.itens || [];
+                  setDevolucaoQuantidades(itens.map(() => 0));
+                }}>Devolução parcial</Button>
+              </div>
+              {devolucaoParcial && (
+                <div className="space-y-3">
+                  {(pedidos.find(p => String(p.id) === String(devolucaoPedidoId))?.itens || []).map((it: any, idx: number) => {
+                    const max = Math.max(0, Number(it.quantidade || 0) - Number(it.devolvido || 0));
+                    return (
+                      <div key={idx} className="flex items-center gap-3">
+                        <div className="flex-1">
+                          <div className="text-sm text-muted-foreground">{it.produto} - Tam {it.tamanho}</div>
+                          <div className="text-xs">Máx: {max}</div>
+                        </div>
+                        <Input type="number" min={0} max={max} value={devolucaoQuantidades[idx] ?? 0} className="w-24"
+                          onChange={(e) => {
+                            const v = Math.max(0, Math.min(max, Number(e.target.value || 0)));
+                            setDevolucaoQuantidades(prev => {
+                              const next = [...prev];
+                              next[idx] = v;
+                              return next;
+                            });
+                          }} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setDevolucaoPedidoId(null); setDevolucaoParcial(false); setDevolucaoQuantidades([]); }}>Cancelar</Button>
+              <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => {
+                const pedido = pedidos.find(p => String(p.id) === String(devolucaoPedidoId));
+                if (!pedido) { setDevolucaoPedidoId(null); return; }
+                if (!devolucaoParcial) {
+                  const qs = (pedido.itens || []).map((it: any) => Math.max(0, Number(it.quantidade || 0) - Number(it.devolvido || 0)));
+                  applyDevolucaoEstoqueParcial(pedido, qs);
+                } else {
+                  applyDevolucaoEstoqueParcial(pedido, devolucaoQuantidades);
+                }
+                setDevolucaoPedidoId(null);
+                setDevolucaoParcial(false);
+                setDevolucaoQuantidades([]);
+              }}>Aplicar devolução</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {devolucaoPedidoId && (
+        <AlertDialog open={confirmTotalOpen} onOpenChange={setConfirmTotalOpen}>
+          <AlertDialogContent className="bg-black text-green-400 border border-green-600">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-white">Confirmar devolução total</AlertDialogTitle>
+              <AlertDialogDescription className="text-white/70">Tem certeza que deseja devolver todos os itens da compra?</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setConfirmTotalOpen(false)}>Cancelar</AlertDialogCancel>
+              <AlertDialogAction className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => {
+                const pedido = pedidos.find(p => String(p.id) === String(devolucaoPedidoId));
+                if (pedido) {
+                  const qs = (pedido.itens || []).map((it: any) => Math.max(0, Number(it.quantidade || 0) - Number(it.devolvido || 0)));
+                  applyDevolucaoEstoqueParcial(pedido, qs);
+                }
+                setConfirmTotalOpen(false);
+                setDevolucaoPedidoId(null);
+                setDevolucaoParcial(false);
+                setDevolucaoQuantidades([]);
+              }}>Devolver todos</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+
+      {/* Botão flutuante NOVO PEDIDO */}
+      <div className="fixed bottom-6 right-6 z-50">
+        <button
+          type="button"
+          className="group relative overflow-hidden rounded-md px-4 py-3 font-semibold text-white bg-green-600 shadow-lg hover:bg-green-700 transition-colors"
+          onClick={() => setNewPedidoOpen(true)}
+          title="Criar novo pedido"
+        >
+          <span className="absolute inset-0 -translate-y-full group-hover:translate-y-0 bg-green-500/30 transition-transform"></span>
+          <span className="relative">NOVO PEDIDO</span>
+        </button>
+      </div>
+
+      {/* Modal de novo pedido */}
+      <Dialog open={newPedidoOpen} onOpenChange={setNewPedidoOpen}>
+        <DialogContent className="bg-[#141414] text-green-400 border border-green-600 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-white">Novo pedido</DialogTitle>
+            <DialogDescription className="text-white/70">Pesquise o produto, selecione tamanho e quantidade, e conclua o pedido.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1 scrollbar-hide">
+            <div>
+              <Label className="text-white">Pesquisar produto</Label>
+              <Input
+                value={productQuery}
+                onChange={(e) => setProductQuery(e.target.value)}
+                placeholder="Digite o nome do produto"
+                className="mt-1"
+              />
+              <div className="mt-2 max-h-40 overflow-auto rounded border border-green-700/40 scrollbar-hide">
+                {storedProducts
+                  .filter(p => (p.name || "").toLowerCase().includes(productQuery.toLowerCase()))
+                  .slice(0, 20)
+                  .map(p => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => { setSelectedProductId(p.id!); setSelectedSize(null); }}
+                      className={`w-full text-left px-3 py-2 hover:bg-black/30 ${selectedProductId === p.id ? 'bg-black/40' : ''}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <img src={p.image} alt={p.name} className="w-10 h-10 object-cover rounded" />
+                        <div>
+                          <div className="text-white text-sm font-medium">{p.name}</div>
+                          <div className="text-xs text-muted-foreground">{p.category}</div>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                {storedProducts.filter(p => (p.name || "").toLowerCase().includes(productQuery.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">Nenhum produto encontrado.</div>
+                )}
+              </div>
+            </div>
+
+            {selectedProductId && (
+              (() => {
+                const prod = storedProducts.find(p => p.id === selectedProductId);
+                const sizes = (prod?.sizes && prod.sizes.length ? prod.sizes : ["U"]).sort((a,b) => rankSize(a) - rankSize(b));
+                return (
+                  <div className="space-y-2">
+                    <Label className="text-white">Tamanho</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {sizes.filter(s => Math.max(0, Number((prod?.stockBySize || {})[s] || 0)) > 0).map(s => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setSelectedSize(s)}
+                          className={`px-3 py-2 rounded-md border ${selectedSize === s ? 'bg-primary/90 text-primary-foreground border-primary' : 'border-border bg-background text-foreground hover:border-primary/50'}`}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                      {sizes.filter(s => Math.max(0, Number((prod?.stockBySize || {})[s] || 0)) > 0).length === 0 && (
+                        <span className="text-xs text-muted-foreground">Sem estoque disponível para os tamanhos deste produto.</span>
+                      )}
+                    </div>
+
+                    {selectedSize && (
+                      <p className="text-xs text-muted-foreground">Estoque disponível: {Math.max(0, Number(((storedProducts.find(p => p.id === selectedProductId)?.stockBySize || {})[selectedSize]) || 0))}</p>
+                    )}
+                    <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                      <div>
+                        <Label className="text-white">Quantidade</Label>
+                        <Input type="number" min={1} value={quantity} onChange={(e) => {
+  const v = e.target.value;
+  const onlyDigits = v.replace(/[^0-9]/g, "");
+  setQuantity(onlyDigits);
+}} onBlur={() => {
+  const raw = parseInt(quantity || "");
+  const val = Number.isFinite(raw) ? raw : 1;
+  const prod = storedProducts.find(p => p.id === selectedProductId);
+  const estoqueSel = selectedSize ? Math.max(0, Number(((prod?.stockBySize || {})[selectedSize]) || 0)) : Number.POSITIVE_INFINITY;
+  const existingItem = selectedSize ? adminCart.find(it => it.id === selectedProductId && it.size === selectedSize) : undefined;
+  const maxAllowed = selectedSize ? Math.max(0, estoqueSel - (existingItem?.quantity || 0)) : val;
+  if (Number.isFinite(maxAllowed) && val > maxAllowed) {
+    if (maxAllowed === 0) {
+      toast.info("Não há estoque disponível para adicionar este tamanho.");
+      setQuantity("1");
+    } else {
+      toast.info(`Estoque disponível: ${maxAllowed}.`);
+      setQuantity(String(maxAllowed));
+    }
+  } else if (val < 1) {
+    setQuantity("1");
+  } else {
+    setQuantity(String(val));
+  }
+}} />
+                      </div>
+                      <Button onClick={addToAdminCart} disabled={!selectedSize || ((parseInt(quantity || "") || 0) <= 0)}>Adicionar</Button>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+
+            <div>
+              <p className="text-white text-sm mb-2">Itens do pedido</p>
+              <div className="space-y-2">
+                {adminCart.map((it, i) => (
+                  <div key={`${it.id}-${it.size}-${i}`} className="rounded-md border border-green-600/40 p-2 bg-black/40 flex items-center gap-3 flex-wrap md:flex-nowrap">
+  {/* modelo (nome) */}
+  <TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="text-white min-w-0 max-w-[38%] truncate whitespace-nowrap">{it.name}</span>
+      </TooltipTrigger>
+      <TooltipContent>{it.name}</TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+
+  {/* tamanho */}
+  <Badge variant="outline" className="w-8 justify-center text-xs whitespace-nowrap">{it.size}</Badge>
+
+  {/* Estoque */}
+  {(() => {
+    const prod = storedProducts.find(p => p.id === it.id);
+    const estoqueDisp = Math.max(0, Number((prod?.stockBySize || {})[it.size] || 0));
+    return <span className="text-xs text-muted-foreground whitespace-nowrap">Estoque: {estoqueDisp}</span>;
+  })()}
+
+  {/* preço */}
+  <span className="text-xs text-muted-foreground whitespace-nowrap">{formatBRL(it.price)}</span>
+
+  {/* quantidade */}
+  <Input type="number" min={1} value={it.quantity} onChange={(e) => updateAdminCartQuantity(i, parseInt(e.target.value) || 1)} className="w-16 h-8" />
+
+  {/* Remover */}
+  <Button variant="ghost" className="text-destructive hover:bg-destructive/10 whitespace-nowrap ml-auto" onClick={() => removeFromAdminCart(i)}>Remover</Button>
+</div>
+                ))}
+                {adminCart.length === 0 && <p className="text-sm text-muted-foreground">Nenhum item adicionado.</p>}
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-white">Total</span>
+                <span className="text-green-500 font-semibold">{formatBRL(adminCartTotal)}</span>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-green-600/40 p-3 bg-black/40">
+              <label className="flex items-center gap-2 text-white">
+                <input type="checkbox" checked={informarCliente} onChange={(e) => setInformarCliente(e.target.checked)} />
+                Informar cliente (nome e telefone)
+              </label>
+              {informarCliente && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <Label className="text-white">Nome do cliente</Label>
+                    <Input value={clienteNome} onChange={(e) => setClienteNome(e.target.value)} placeholder="Ex: João" />
+                  </div>
+                  <div>
+                    <Label className="text-white">Telefone</Label>
+                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(e.target.value)} placeholder="Ex: (75) 91234-5678" />
+                  </div>
+                </div>
+              )}
+              {!informarCliente && (
+                <p className="text-xs text-muted-foreground mt-2">Se não informar, será usado nome "LOJA" e telefone "(XX) XXXXXX-XXXX".</p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 sticky bottom-0 bg-[#141414] py-2">
+              <Button variant="outline" onClick={() => { setNewPedidoOpen(false); }}>Cancelar</Button>
+              <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => setConfirmDebitarOpen(true)} disabled={adminCart.length === 0}>Concluir pedido</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmação de baixa de estoque */}
+      <Dialog open={confirmDebitarOpen} onOpenChange={setConfirmDebitarOpen}>
+        <DialogContent className="bg-[#141414] text-green-400 border border-green-600 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Deseja dar baixa no estoque ao concluir?</DialogTitle>
+            <DialogDescription className="text-white/70">Se não, o pedido ficará como pendente.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <div className="flex w-full justify-end gap-2">
+              <Button variant="secondary" onClick={() => { setConfirmDebitarOpen(false); void handleCreateAdminOrder(false); }}>Concluir sem baixa</Button>
+              <Button onClick={() => { setConfirmDebitarOpen(false); void handleCreateAdminOrder(true); }}>Dar baixa</Button>
+            </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
