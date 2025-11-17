@@ -259,3 +259,44 @@ TO authenticated
 USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_pedido_id ON public.audit_logs(pedido_id);
+
+-- Tabela de clientes
+CREATE TABLE IF NOT EXISTS public.clientes (
+  id BIGSERIAL PRIMARY KEY,
+  nome TEXT NOT NULL,
+  telefone TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT unique_telefone UNIQUE (telefone)
+);
+
+ALTER TABLE public.clientes ENABLE ROW LEVEL SECURITY;
+
+-- Políticas: leitura por admins; insert público (para registrar durante pedido), update/delete por admins
+DROP POLICY IF EXISTS "Public insert clientes" ON public.clientes;
+CREATE POLICY "Public insert clientes"
+  ON public.clientes
+  FOR INSERT
+  TO public
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Admins select clientes" ON public.clientes;
+CREATE POLICY "Admins select clientes"
+  ON public.clientes
+  FOR SELECT
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins update clientes" ON public.clientes;
+CREATE POLICY "Admins update clientes"
+  ON public.clientes
+  FOR UPDATE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins delete clientes" ON public.clientes;
+CREATE POLICY "Admins delete clientes"
+  ON public.clientes
+  FOR DELETE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.admins a WHERE a.user_id = auth.uid()));

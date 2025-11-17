@@ -238,6 +238,11 @@ const Index = () => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
+        // Upsert cliente (telefone único)
+        try {
+          await supabase.from("clientes").upsert({ nome: clienteNome, telefone: normalizePhone(clienteTelefone) }, { onConflict: "telefone" });
+        } catch {}
+
         const { error } = await supabase
           .from("pedidos")
           .insert({

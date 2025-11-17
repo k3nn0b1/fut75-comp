@@ -149,6 +149,101 @@ const [informarCliente, setInformarCliente] = useState(true);
 const [clienteNome, setClienteNome] = useState("");
 const [clienteTelefone, setClienteTelefone] = useState("");
 
+// Clientes: estados e utilitários
+const [clientes, setClientes] = useState<any[]>([]);
+const [clientesQuery, setClientesQuery] = useState("");
+const [editingClienteId, setEditingClienteId] = useState<number | null>(null);
+const [editingClienteNome, setEditingClienteNome] = useState("");
+const [editingClienteTelefone, setEditingClienteTelefone] = useState("");
+const normalizePhone = (raw: string) => raw.replace(/\D+/g, "");
+const clientesFiltered = clientes.filter((c) => {
+  const term = clientesQuery.toLowerCase().trim();
+  return term === "" || c.nome?.toLowerCase().includes(term) || String(c.telefone || "").toLowerCase().includes(term);
+});
+
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const fetchClientes = async () => {
+    const { data, error } = await supabase
+      .from("clientes")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (!error && data) setClientes(data as any[]);
+  };
+  void fetchClientes();
+}, []);
+
+const handleAddCliente = async () => {
+  try {
+    const nome = clienteNome.trim();
+    const telRaw = clienteTelefone.trim();
+    if (nome === "" || telRaw === "") {
+      toast.error("Informe nome e telefone");
+      return;
+    }
+    const tel = normalizePhone(telRaw);
+    if (tel.length < 10) {
+      toast.error("Telefone inválido");
+      return;
+    }
+    if (!IS_SUPABASE_READY) {
+      toast.error("Supabase não configurado");
+      return;
+    }
+    const { error } = await supabase
+      .from("clientes")
+      .upsert({ nome, telefone: tel }, { onConflict: "telefone" });
+    if (error) throw error;
+
+    const { data } = await supabase
+      .from("clientes")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (data) setClientes(data as any[]);
+
+    toast.success("Cliente salvo!");
+    setClienteNome("");
+    setClienteTelefone("");
+  } catch (e: any) {
+    toast.error("Falha ao salvar cliente", { description: e?.message });
+  }
+};
+
+const handleSaveCliente = async () => {
+  try {
+    const id = editingClienteId;
+    if (id == null) return;
+    const nome = editingClienteNome.trim();
+    const telRaw = editingClienteTelefone.trim();
+    if (nome === "" || telRaw === "") {
+      toast.error("Informe nome e contato");
+      return;
+    }
+    const tel = normalizePhone(telRaw);
+    if (tel.length < 10) {
+      toast.error("Contato inválido");
+      return;
+    }
+    if (!IS_SUPABASE_READY) {
+      toast.error("Supabase não configurado");
+      return;
+    }
+    const { error } = await supabase
+      .from("clientes")
+      .update({ nome, telefone: tel })
+      .eq("id", id);
+    if (error) throw error;
+
+    setClientes((prev) => prev.map((c) => c.id === id ? { ...c, nome, telefone: tel } : c));
+    toast.success("Cliente atualizado");
+    setEditingClienteId(null);
+    setEditingClienteNome("");
+    setEditingClienteTelefone("");
+  } catch (e: any) {
+    toast.error("Falha ao atualizar cliente", { description: e?.message });
+  }
+};
+
 const addToAdminCart = () => {
   const qty = Math.max(1, parseInt(quantity || '1') || 1);
   if (!selectedProductId || !selectedSize || qty <= 0) return;
@@ -268,6 +363,11 @@ const handleCreateAdminOrder = async (debitarEstoque: boolean) => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
+        // Upsert cliente (telefone único)
+        try {
+          await supabase.from("clientes").upsert({ nome, telefone: normalizePhone(telefone) }, { onConflict: "telefone" });
+        } catch {}
+
         const { error } = await supabase
           .from("pedidos")
           .insert({
@@ -310,6 +410,11 @@ const handleCreateAdminOrder = async (debitarEstoque: boolean) => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
+        // Upsert cliente (telefone único)
+        try {
+          await supabase.from("clientes").upsert({ nome, telefone: normalizePhone(telefone) }, { onConflict: "telefone" });
+        } catch {}
+
         const { error } = await supabase
           .from("pedidos")
           .insert({
@@ -389,6 +494,19 @@ useEffect(() => {
   };
 }, []);
 
+// Realtime de clientes
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const channel = supabase
+    .channel("clientes-realtime")
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'clientes' }, async () => {
+      const { data } = await supabase.from('clientes').select('*').order('created_at', { ascending: false });
+      if (data) setClientes(data as any[]);
+    })
+    .subscribe();
+  return () => { try { supabase.removeChannel(channel); } catch {} };
+}, []);
+
 // Filtro
 const filteredPedidos = pedidos.filter((p) => {
 
@@ -401,25 +519,16 @@ const filteredPedidos = pedidos.filter((p) => {
   return matchStatus && matchSearch;
 });
 
-// Ordenar por mais recentes primeiro (últimos pedidos)
-
-const orderedPedidosByDate = [...filteredPedidos].sort((a, b) => {
-  const ta = new Date(a.data_criacao).getTime();
-  const tb = new Date(b.data_criacao).getTime();
-  return tb - ta; // mais novo primeiro
-});
-const totalPages = Math.max(1, Math.ceil(orderedPedidosByDate.length / pageSize));
-
+// Ordenar com prioridade: pendentes primeiro, depois por mais recentes
+const orderedPedidos = sortPedidos(filteredPedidos);
+const totalPages = Math.max(1, Math.ceil(orderedPedidos.length / pageSize));
 
 useEffect(() => { setPedidoPage(prev => Math.min(prev, totalPages)); }, [totalPages]);
 
 const startIndex = (pedidoPage - 1) * pageSize;
-const pageSlice = orderedPedidosByDate.slice(startIndex, startIndex + pageSize);
-// Priorizar pendentes dentro da própria página, preservando ordem por data
-const visiblePedidos = [
-  ...pageSlice.filter(p => p.status === 'pendente'),
-  ...pageSlice.filter(p => p.status !== 'pendente'),
-];
+const pageSlice = orderedPedidos.slice(startIndex, startIndex + pageSize);
+// Já estão ordenados com pendentes primeiro; apenas usamos o slice
+const visiblePedidos = pageSlice;
 
 
 // Sequencial estável por ordem de criação (mais antigo = 1)
@@ -985,6 +1094,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
               <TabsTrigger value="stock">Estoque</TabsTrigger>
               <TabsTrigger value="sizes">Tamanhos</TabsTrigger>
               <TabsTrigger value="images">Imagens</TabsTrigger>
+              <TabsTrigger value="clientes">Clientes</TabsTrigger>
               <TabsTrigger value="categories">Categorias</TabsTrigger>
             </TabsList>
 
@@ -1017,7 +1127,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                   </div>
                 </div>
 
-                {orderedPedidosByDate.length === 0 ? (
+                {orderedPedidos.length === 0 ? (
                   <p className="text-muted-foreground">Nenhum pedido encontrado.</p>
                 ) : (
                   <div className="overflow-x-auto rounded-md border">
@@ -1732,6 +1842,71 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                   })()}
                   </div>
                 )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Clientes */}
+          <TabsContent value="clientes" className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Clientes</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col md:flex-row gap-3 md:items-end">
+                  <div className="flex-1">
+                    <Label>Nome</Label>
+                    <Input value={clienteNome} onChange={(e) => setClienteNome(e.target.value)} placeholder="Nome do cliente" />
+                  </div>
+                  <div className="flex-1">
+                    <Label>Contato</Label>
+                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(e.target.value)} placeholder="Ex: (75) 91234-5678" />
+                  </div>
+                  <Button onClick={handleAddCliente}>Adicionar</Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input value={clientesQuery} onChange={(e) => setClientesQuery(e.target.value)} placeholder="Buscar cliente por nome ou telefone" />
+                  <Button variant="outline" onClick={() => setClientesQuery("")}>Limpar</Button>
+                </div>
+                <div className="rounded-md border">
+                  {clientesFiltered.length === 0 ? (
+                    <p className="p-4 text-muted-foreground">Nenhum cliente encontrado</p>
+                  ) : (
+                    <div className="divide-y">
+                      {clientesFiltered.map((c) => (
+                        <div key={c.id} className="flex items-center justify-between px-3 py-2">
+                          <div className="flex-1">
+                            {editingClienteId === c.id ? (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                  <Label>Nome</Label>
+                                  <Input value={editingClienteNome} onChange={(e) => setEditingClienteNome(e.target.value)} />
+                                </div>
+                                <div>
+                                  <Label>Contato</Label>
+                                  <Input value={editingClienteTelefone} onChange={(e) => setEditingClienteTelefone(e.target.value)} />
+                                </div>
+                              </div>
+                            ) : (
+                              <div>
+                                <div className="font-medium">{c.nome}</div>
+                                <div className="text-sm text-muted-foreground">{c.telefone}</div>
+                              </div>
+                            )}
+                          </div>
+                          {editingClienteId === c.id ? (
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" onClick={() => { setEditingClienteId(null); setEditingClienteNome(""); setEditingClienteTelefone(""); }}>Cancelar</Button>
+                              <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={handleSaveCliente}>Salvar</Button>
+                            </div>
+                          ) : (
+                            <Button variant="ghost" onClick={() => { setEditingClienteId(c.id); setEditingClienteNome(c.nome || ""); setEditingClienteTelefone(c.telefone || ""); }}>Editar</Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
