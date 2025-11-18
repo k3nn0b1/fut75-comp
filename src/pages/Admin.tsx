@@ -156,6 +156,15 @@ const [editingClienteId, setEditingClienteId] = useState<number | null>(null);
 const [editingClienteNome, setEditingClienteNome] = useState("");
 const [editingClienteTelefone, setEditingClienteTelefone] = useState("");
 const normalizePhone = (raw: string) => raw.replace(/\D+/g, "");
+const formatPhoneMask = (value: string) => {
+  const digits = value.replace(/\D+/g, "").slice(0, 11);
+  const part1 = digits.slice(0, 2);
+  const part2 = digits.slice(2, 7);
+  const part3 = digits.slice(7, 11);
+  if (digits.length <= 2) return part1 ? `(${part1}` : "";
+  if (digits.length <= 7) return `(${part1}) ${part2}`;
+  return `(${part1}) ${part2}-${part3}`;
+};
 const clientesFiltered = clientes.filter((c) => {
   const term = clientesQuery.toLowerCase().trim();
   return term === "" || c.nome?.toLowerCase().includes(term) || String(c.telefone || "").toLowerCase().includes(term);
@@ -192,7 +201,7 @@ const handleAddCliente = async () => {
     }
     const { error } = await supabase
       .from("clientes")
-      .upsert({ nome, telefone: tel }, { onConflict: "telefone" });
+      .insert({ nome, telefone: tel }, { ignoreDuplicates: true });
     if (error) throw error;
 
     const { data } = await supabase
@@ -363,9 +372,17 @@ const handleCreateAdminOrder = async (debitarEstoque: boolean) => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
-        // Upsert cliente (telefone único)
+        // Inserir cliente apenas se telefone ainda não existir (ignorar conflito)
         try {
-          await supabase.from("clientes").upsert({ nome, telefone: normalizePhone(telefone) }, { onConflict: "telefone" });
+          await supabase.from("clientes").insert({ nome, telefone: normalizePhone(telefone) }, { ignoreDuplicates: true });
+        } catch {}
+        // Atualiza lista de clientes imediatamente
+        try {
+          const { data: clientesData } = await supabase
+            .from("clientes")
+            .select("*")
+            .order("created_at", { ascending: false });
+          if (clientesData) setClientes(clientesData as any[]);
         } catch {}
 
         const { error } = await supabase
@@ -410,9 +427,17 @@ const handleCreateAdminOrder = async (debitarEstoque: boolean) => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
-        // Upsert cliente (telefone único)
+        // Inserir cliente apenas se telefone ainda não existir (ignorar conflito)
         try {
-          await supabase.from("clientes").upsert({ nome, telefone: normalizePhone(telefone) }, { onConflict: "telefone" });
+          await supabase.from("clientes").insert({ nome, telefone: normalizePhone(telefone) }, { ignoreDuplicates: true });
+        } catch {}
+        // Atualiza lista de clientes imediatamente
+        try {
+          const { data: clientesData } = await supabase
+            .from("clientes")
+            .select("*")
+            .order("created_at", { ascending: false });
+          if (clientesData) setClientes(clientesData as any[]);
         } catch {}
 
         const { error } = await supabase
@@ -502,6 +527,77 @@ useEffect(() => {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'clientes' }, async () => {
       const { data } = await supabase.from('clientes').select('*').order('created_at', { ascending: false });
       if (data) setClientes(data as any[]);
+    })
+    .subscribe();
+  return () => { try { supabase.removeChannel(channel); } catch {} };
+}, []);
+
+// Realtime de produtos
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const normalizeProduct = (p: any) => {
+    const stockBySizeObj = p.stockBySize && typeof p.stockBySize === 'object'
+      ? Object.fromEntries(Object.entries(p.stockBySize).map(([k, v]) => [k, Number((v as any) ?? 0)]))
+      : undefined;
+    const totalFromSizes = stockBySizeObj
+      ? Object.values(stockBySizeObj).reduce((sum, n) => sum + Number(n ?? 0), 0)
+      : undefined;
+    return {
+      ...p,
+      stockBySize: stockBySizeObj,
+      stock: totalFromSizes !== undefined && totalFromSizes > 0 ? totalFromSizes : (typeof p.stock === 'number' ? p.stock : 0),
+    };
+  };
+  const channel = supabase
+    .channel('products-realtime-admin')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (payload: any) => {
+      const newRow = payload.new;
+      if (!newRow) return;
+      const norm = normalizeProduct(newRow);
+      setStoredProducts(prev => [norm, ...prev.filter(p => p.id !== newRow.id)]);
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, (payload: any) => {
+      const newRow = payload.new;
+      if (!newRow) return;
+      const norm = normalizeProduct(newRow);
+      setStoredProducts(prev => prev.map(p => p.id === newRow.id ? norm : p));
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload: any) => {
+      const oldRow = payload.old;
+      if (!oldRow) return;
+      setStoredProducts(prev => prev.filter(p => p.id !== oldRow.id));
+    })
+    .subscribe();
+  return () => { try { supabase.removeChannel(channel); } catch {} };
+}, []);
+
+// Realtime de categorias
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const channel = supabase
+    .channel('categories-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, async () => {
+      const { data } = await supabase
+        .from('categories')
+        .select('name')
+        .order('name', { ascending: true });
+      if (data) setCategories((data as any[]).map(c => c.name));
+    })
+    .subscribe();
+  return () => { try { supabase.removeChannel(channel); } catch {} };
+}, []);
+
+// Realtime de tamanhos
+useEffect(() => {
+  if (!IS_SUPABASE_READY) return;
+  const channel = supabase
+    .channel('sizes-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'sizes' }, async () => {
+      const { data } = await supabase
+        .from('sizes')
+        .select('name')
+        .order('name', { ascending: true });
+      if (data) setGlobalSizes((data as any[]).map(s => s.name));
     })
     .subscribe();
   return () => { try { supabase.removeChannel(channel); } catch {} };
@@ -1860,7 +1956,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                   </div>
                   <div className="flex-1">
                     <Label>Contato</Label>
-                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(e.target.value)} placeholder="Ex: (75) 91234-5678" />
+                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(formatPhoneMask(e.target.value))} placeholder="(XX) XXXXX-XXXX" />
                   </div>
                   <Button onClick={handleAddCliente}>Adicionar</Button>
                 </div>
@@ -1884,7 +1980,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                                 </div>
                                 <div>
                                   <Label>Contato</Label>
-                                  <Input value={editingClienteTelefone} onChange={(e) => setEditingClienteTelefone(e.target.value)} />
+                                  <Input value={editingClienteTelefone} onChange={(e) => setEditingClienteTelefone(formatPhoneMask(e.target.value))} placeholder="(XX) XXXXX-XXXX" />
                                 </div>
                               </div>
                             ) : (
@@ -2320,7 +2416,7 @@ const handleConfirmAction = async (id: string, action: "concluir" | "cancelar") 
                   </div>
                   <div>
                     <Label className="text-white">Telefone</Label>
-                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(e.target.value)} placeholder="Ex: (75) 91234-5678" />
+                    <Input value={clienteTelefone} onChange={(e) => setClienteTelefone(formatPhoneMask(e.target.value))} placeholder="(XX) XXXXX-XXXX" />
                   </div>
                 </div>
               )}

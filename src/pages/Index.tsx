@@ -98,6 +98,16 @@ const Index = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [products, setProducts] = useState<Product[]>(mockProducts);
 
+  // Ordena produtos colocando esgotados (stock <= 0) por último e, dentro dos grupos, por id desc
+  const sortProducts = (list: Product[]) => {
+    return [...list].sort((a, b) => {
+      const aOut = Number(a.stock ?? 0) <= 0;
+      const bOut = Number(b.stock ?? 0) <= 0;
+      if (aOut !== bOut) return aOut ? 1 : -1;
+      return (b.id ?? 0) - (a.id ?? 0);
+    });
+  };
+
   useEffect(() => {
     const load = async () => {
       const hasSupabase = !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -127,15 +137,57 @@ const Index = () => {
                     : (typeof p.stock === "number" ? p.stock : 0),
               } as Product;
             });
-            setProducts(normalized);
-            return;
+            setProducts(sortProducts(normalized));
           }
         } catch {}
+        // Subscrição realtime de produtos
+        const channel = supabase
+          .channel("products-realtime-index")
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (payload: any) => {
+            const newRow = payload.new;
+            if (!newRow) return;
+            const stockBySizeObj = newRow.stockBySize && typeof newRow.stockBySize === "object"
+              ? Object.fromEntries(Object.entries(newRow.stockBySize).map(([k, v]) => [k, Number((v as any) ?? 0)]))
+              : undefined;
+            const totalFromSizes = stockBySizeObj
+              ? Object.values(stockBySizeObj).reduce((sum, n) => sum + Number(n ?? 0), 0)
+              : undefined;
+            const norm = {
+              ...newRow,
+              stockBySize: stockBySizeObj,
+              stock: totalFromSizes !== undefined && totalFromSizes > 0 ? totalFromSizes : (typeof newRow.stock === 'number' ? newRow.stock : 0),
+            } as Product;
+            setProducts(prev => sortProducts([norm, ...prev.filter(p => p.id !== norm.id)]));
+          })
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, (payload: any) => {
+            const newRow = payload.new;
+            if (!newRow) return;
+            const stockBySizeObj = newRow.stockBySize && typeof newRow.stockBySize === "object"
+              ? Object.fromEntries(Object.entries(newRow.stockBySize).map(([k, v]) => [k, Number((v as any) ?? 0)]))
+              : undefined;
+            const totalFromSizes = stockBySizeObj
+              ? Object.values(stockBySizeObj).reduce((sum, n) => sum + Number(n ?? 0), 0)
+              : undefined;
+            const norm = {
+              ...newRow,
+              stockBySize: stockBySizeObj,
+              stock: totalFromSizes !== undefined && totalFromSizes > 0 ? totalFromSizes : (typeof newRow.stock === 'number' ? newRow.stock : 0),
+            } as Product;
+            setProducts(prev => sortProducts(prev.map(p => p.id === norm.id ? norm : p)));
+          })
+          .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload: any) => {
+            const oldRow = payload.old;
+            if (!oldRow) return;
+            setProducts(prev => sortProducts(prev.filter(p => p.id !== oldRow.id)));
+          })
+          .subscribe();
+        return () => { try { supabase.removeChannel(channel); } catch {} };
       }
       // Sem Supabase: usar apenas produtos mockados
-      setProducts(mockProducts);
+      setProducts(sortProducts(mockProducts));
     };
-    void load();
+    const unsub = load();
+    return () => { /* caso load tenha retornado uma cleanup de canal */ };
   }, []);
 
   const getMaxStockFor = (product: Product, size: string) => {
@@ -238,9 +290,9 @@ const Index = () => {
         const uuid = typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
           ? (crypto as any).randomUUID()
           : generateUUID();
-        // Upsert cliente (telefone único)
+        // Inserir cliente apenas se telefone ainda não existir (ignorar conflito)
         try {
-          await supabase.from("clientes").upsert({ nome: clienteNome, telefone: normalizePhone(clienteTelefone) }, { onConflict: "telefone" });
+          await supabase.from("clientes").insert({ nome: clienteNome, telefone: normalizePhone(clienteTelefone) }, { ignoreDuplicates: true });
         } catch {}
 
         const { error } = await supabase
